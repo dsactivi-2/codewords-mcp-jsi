@@ -246,6 +246,20 @@ def _limit(value: Any, default: int = MAX_ROWS) -> int:
     return max(1, min(_num(value, "limit"), HARD_LIMIT))
 
 
+async def _protokolliere(art: str, werkzeug: str, meldung: str, kontext: str | None = None) -> None:
+    """Schreibt Warnung oder Fehler ins Protokoll. Best effort — wirft nie, blockiert nie den Aufruf."""
+    try:
+        await db(
+            "INSERT INTO mcp_fehler (f_zeit, f_art, f_werkzeug, f_meldung, f_kontext, f_exportiert) "
+            f"VALUES (NOW(), '{_esc(art)[:14]}', '{_esc(werkzeug)[:60]}', "
+            f"'{_esc(meldung)[:450]}', "
+            + (f"'{_esc(kontext)[:450]}'" if kontext else "NULL")
+            + ", 0)"
+        )
+    except Exception as fehler:  # noqa: BLE001 - Protokollierung darf den Fachaufruf nie stoeren
+        logger.warning("Fehlerprotokoll nicht beschreibbar", art=art, werkzeug=werkzeug, fehler=str(fehler)[:200])
+
+
 async def db(query: str) -> list[dict]:
     """Fuehrt genau eine vorbereitete Abfrage ueber die MySQL-Verbindung aus."""
     api_key = get_contextvars().get("codewords_api_key")
@@ -1501,6 +1515,8 @@ def create_fastapi_app() -> FastAPI:
                 )
             if status_zahl not in DOC_STATUS:
                 erlaubt = ", ".join(f"{k} {v}" for k, v in sorted(DOC_STATUS.items()))
+                await _protokolliere("Warnung", werkzeug, f"Unbekannter Status: {status_zahl}",
+                                     json.dumps(parameter, ensure_ascii=False))
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unbekannter Status: {status_zahl}. Erlaubt sind: {erlaubt}",
@@ -1514,12 +1530,14 @@ def create_fastapi_app() -> FastAPI:
             raise
         except DienstFehler as fehler:
             logger.error("Werkzeug-Test Dienstfehler", werkzeug=werkzeug, fehler=str(fehler)[:300])
+            await _protokolliere("Fehler", werkzeug, str(fehler), json.dumps(parameter, ensure_ascii=False))
             raise HTTPException(
                 status_code=500,
                 detail=f"Dienstfehler bei '{werkzeug}': {fehler}",
             ) from fehler
         except ValueError as fehler:
             logger.warning("Werkzeug-Test abgelehnt", werkzeug=werkzeug, grund=str(fehler)[:200])
+            await _protokolliere("Warnung", werkzeug, str(fehler), json.dumps(parameter, ensure_ascii=False))
             raise HTTPException(status_code=400, detail=str(fehler) or "Ungueltiger Wert") from fehler
         except TypeError as fehler:
             raise HTTPException(
