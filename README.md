@@ -197,3 +197,9 @@ erzeugt die teuersten Fehler in diesem System.
 Immer diese fünf Angaben: Zeitpunkt mit Uhrzeit · `kandidat_id` und, falls vorhanden,
 `doc_id` · was getan werden sollte (ein Satz) · was tatsächlich passierte, mit der
 wörtlichen Meldung · was bereits versucht wurde.
+
+## Dokumentation
+
+- [`docs/error-recovery.md`](docs/error-recovery.md) — neun Fehlersignale
+- [`docs/rollout-checklist.md`](docs/rollout-checklist.md) — Roll-out und Freigabe
+- [`docs/team-anleitung.md`](docs/team-anleitung.md) — Anleitung fuer Mitarbeiter
