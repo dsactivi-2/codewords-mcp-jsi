@@ -29,7 +29,11 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from fastmcp import FastMCP
-from fastmcp.exceptions import McpError
+
+
+class DienstFehler(RuntimeError):
+    """Technischer Fehler des Dienstes: Eingaben sind in Ordnung, die Umgebung nicht."""
+
 from pydantic import BaseModel, Field, field_validator
 from structlog.contextvars import get_contextvars
 
@@ -219,11 +223,11 @@ DOC_STATUS: dict[int, str] = {
 def _esc(value: str) -> str:
     """Escaped einen Textwert fuer MySQL und weist alles Unerwartete ab."""
     if not isinstance(value, str):
-        raise McpError("Textwert erwartet", code=-32602)
+        raise ValueError("Textwert erwartet")
     cleaned = value.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
     cleaned = "".join(ch for ch in cleaned if ord(ch) >= 32)
     if ";" in cleaned or "--" in cleaned or "/*" in cleaned:
-        raise McpError("Unzulaessige Zeichen im Wert", code=-32602)
+        raise ValueError("Unzulaessige Zeichen im Wert")
     return cleaned
 
 
@@ -235,7 +239,7 @@ def _num(value: Any, name: str = "Wert") -> int:
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
-        raise McpError(f"{name} muss eine ganze Zahl sein", code=-32602) from exc
+        raise ValueError(f"{name} muss eine ganze Zahl sein") from exc
 
 
 def _limit(value: Any, default: int = MAX_ROWS) -> int:
@@ -262,17 +266,17 @@ async def db(query: str) -> list[dict]:
             )
         except httpx.HTTPError as exc:
             logger.error("Datenbank-Aufruf fehlgeschlagen", error=str(exc)[:300])
-            raise McpError(f"Datenbank nicht erreichbar: {str(exc)[:180]}", code=-32603) from exc
+            raise DienstFehler(f"Datenbank nicht erreichbar: {str(exc)[:180]}") from exc
 
     if response.status_code != 200:
         logger.error("Datenbank-Aufruf Status", status=response.status_code, body=response.text[:240])
-        raise McpError(f"Datenbankfehler: {response.text[:180]}", code=-32603)
+        raise DienstFehler(f"Datenbankfehler: {response.text[:180]}")
 
     payload = response.json()
     if not isinstance(payload, dict):
         return []
     if payload.get("status") not in (None, "ok"):
-        raise McpError(f"Abfrage abgelehnt: {str(payload.get('error'))[:160]}", code=-32603)
+        raise DienstFehler(f"Abfrage abgelehnt: {str(payload.get('error'))[:160]}")
     result = payload.get("ret")
     return result if isinstance(result, list) else []
 
@@ -283,7 +287,7 @@ async def _kandidat_oder_fehler(kandidat_id: int) -> dict:
         f"WHERE kandidat_id = {kandidat_id} LIMIT 1"
     )
     if not rows:
-        raise McpError(f"Kandidat {kandidat_id} existiert nicht", code=-32602)
+        raise ValueError(f"Kandidat {kandidat_id} existiert nicht")
     return rows[0]
 
 
@@ -293,7 +297,7 @@ async def _dokumenttyp(doc_type_id: int) -> dict:
         f"WHERE doc_type_id = {doc_type_id} LIMIT 1"
     )
     if not rows:
-        raise McpError(f"Dokumenttyp {doc_type_id} existiert nicht", code=-32602)
+        raise ValueError(f"Dokumenttyp {doc_type_id} existiert nicht")
     return rows[0]
 
 
@@ -348,7 +352,7 @@ async def kandidat_profil(
         f"WHERE k.kandidat_id = {kid} LIMIT 1"
     )
     if not rows:
-        raise McpError(f"Kandidat {kid} existiert nicht", code=-32602)
+        raise ValueError(f"Kandidat {kid} existiert nicht")
     return {"success": True, "profil": rows[0]}
 
 
@@ -366,7 +370,7 @@ async def unterlagen_soll(
     if nalog_id is None:
         rows = await db(f"SELECT kandidat_nalog_id FROM idk_kandidati WHERE kandidat_id = {kid} LIMIT 1")
         if not rows or not rows[0].get("kandidat_nalog_id"):
-            raise McpError("Kandidat hat keinen Auftrag; bitte nalog_id angeben", code=-32602)
+            raise ValueError("Kandidat hat keinen Auftrag; bitte nalog_id angeben")
         nid = _num(rows[0]["kandidat_nalog_id"], "nalog_id")
     else:
         nid = _num(nalog_id, "nalog_id")
@@ -443,7 +447,7 @@ async def job_details(
         f"WHERE nalog_id = {nid} LIMIT 1"
     )
     if not rows:
-        raise McpError(f"Auftrag {nid} existiert nicht", code=-32602)
+        raise ValueError(f"Auftrag {nid} existiert nicht")
     return {"success": True, "auftrag": rows[0]}
 
 
@@ -496,7 +500,7 @@ async def unterlage_verlauf(
         f"FROM idk_pp_documents WHERE doc_id = {did} LIMIT 1"
     )
     if not doc:
-        raise McpError(f"Dokument {did} existiert nicht", code=-32602)
+        raise ValueError(f"Dokument {did} existiert nicht")
     verlauf = await db(
         "SELECT dsl_doc_status, dsl_date, dsl_comment FROM idk_pp_documents_status_logs "
         f"WHERE dsl_doc_id = {did} ORDER BY dsl_date DESC LIMIT 50"
@@ -682,15 +686,15 @@ async def unterlage_anlegen(
     tid = _num(doc_type_id, "doc_type_id")
     status = _num(doc_status, "doc_status")
     if status not in DOC_STATUS:
-        raise McpError(f"Unbekannter Status {status}; erlaubt: {sorted(DOC_STATUS)}", code=-32602)
+        raise ValueError(f"Unbekannter Status {status}; erlaubt: {sorted(DOC_STATUS)}")
     if not datei_url.strip().startswith("https://"):
-        raise McpError("datei_url muss mit https:// beginnen", code=-32602)
+        raise ValueError("datei_url muss mit https:// beginnen")
 
     await _kandidat_oder_fehler(kid)
     typ = await _dokumenttyp(tid)
     auftrag = await db(f"SELECT nalog_id FROM idk_nalozi WHERE nalog_id = {nid} LIMIT 1")
     if not auftrag:
-        raise McpError(f"Auftrag {nid} existiert nicht", code=-32602)
+        raise ValueError(f"Auftrag {nid} existiert nicht")
 
     url = _esc(datei_url.strip())
     name = _esc(str(typ["doc_type_name"] or "Unterlage"))
@@ -712,7 +716,7 @@ async def unterlage_anlegen(
         f"SELECT doc_id FROM idk_pp_documents WHERE doc_candidate_id = {kid} ORDER BY doc_id DESC LIMIT 1"
     )
     if not neu:
-        raise McpError("Dokument wurde angelegt, Nummer konnte nicht gelesen werden", code=-32603)
+        raise DienstFehler("Dokument wurde angelegt, Nummer konnte nicht gelesen werden")
     doc_id = _num(neu[0]["doc_id"], "doc_id")
 
     await db(
@@ -757,11 +761,11 @@ async def unterlage_status_setzen(
     did = _num(doc_id, "doc_id")
     status = _num(status_id, "status_id")
     if status not in DOC_STATUS:
-        raise McpError(f"Unbekannter Status {status}; erlaubt: {sorted(DOC_STATUS)}", code=-32602)
+        raise ValueError(f"Unbekannter Status {status}; erlaubt: {sorted(DOC_STATUS)}")
 
     doc = await db(f"SELECT doc_id, doc_status FROM idk_pp_documents WHERE doc_id = {did} LIMIT 1")
     if not doc:
-        raise McpError(f"Dokument {did} existiert nicht", code=-32602)
+        raise ValueError(f"Dokument {did} existiert nicht")
 
     await db(f"UPDATE idk_pp_documents SET doc_status = {status} WHERE doc_id = {did} LIMIT 1")
     log_text = f"Agent: Status gesetzt auf {DOC_STATUS[status]}"
@@ -841,9 +845,9 @@ async def kontakt_korrigieren(
     """
     kid = _num(kandidat_id, "kandidat_id")
     if not telefon and not email:
-        raise McpError("Bitte telefon oder email angeben", code=-32602)
+        raise ValueError("Bitte telefon oder email angeben")
     if email and "@" not in email:
-        raise McpError("E-Mail-Adresse ungueltig", code=-32602)
+        raise ValueError("E-Mail-Adresse ungueltig")
 
     await _kandidat_oder_fehler(kid)
     aenderungen = []
@@ -869,13 +873,13 @@ async def datei_pruefen(
     """
     url = datei_url.strip()
     if not url.startswith("https://"):
-        raise McpError("datei_url muss mit https:// beginnen", code=-32602)
+        raise ValueError("datei_url muss mit https:// beginnen")
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
         try:
             antwort = await client.get(url)
         except httpx.HTTPError as exc:
-            raise McpError(f"Adresse nicht erreichbar: {str(exc)[:150]}", code=-32603) from exc
+            raise DienstFehler(f"Adresse nicht erreichbar: {str(exc)[:150]}") from exc
 
     inhaltstyp = antwort.headers.get("content-type", "unbekannt")
     brauchbar = antwort.status_code == 200 and len(antwort.content) > 0
@@ -898,10 +902,10 @@ async def datei_bestaetigen(
     """Dateiverweis einer bestehenden Unterlage nachtragen und protokollieren."""
     did = _num(doc_id, "doc_id")
     if not datei_url.strip().startswith("https://"):
-        raise McpError("datei_url muss mit https:// beginnen", code=-32602)
+        raise ValueError("datei_url muss mit https:// beginnen")
     doc = await db(f"SELECT doc_id, doc_candidate_id FROM idk_pp_documents WHERE doc_id = {did} LIMIT 1")
     if not doc:
-        raise McpError(f"Dokument {did} existiert nicht", code=-32602)
+        raise ValueError(f"Dokument {did} existiert nicht")
 
     url = _esc(datei_url.strip())
     await db(f"UPDATE idk_pp_documents SET doc_file_name = '{url}' WHERE doc_id = {did} LIMIT 1")
@@ -1508,7 +1512,14 @@ def create_fastapi_app() -> FastAPI:
             return await ziel(**parameter)
         except HTTPException:
             raise
+        except DienstFehler as fehler:
+            logger.error("Werkzeug-Test Dienstfehler", werkzeug=werkzeug, fehler=str(fehler)[:300])
+            raise HTTPException(
+                status_code=500,
+                detail=f"Dienstfehler bei '{werkzeug}': {fehler}",
+            ) from fehler
         except ValueError as fehler:
+            logger.warning("Werkzeug-Test abgelehnt", werkzeug=werkzeug, grund=str(fehler)[:200])
             raise HTTPException(status_code=400, detail=str(fehler) or "Ungueltiger Wert") from fehler
         except TypeError as fehler:
             raise HTTPException(
