@@ -46,9 +46,11 @@ Status 6 und 15 sind menschlichen Bearbeitern vorbehalten.
 
 ## Herkunft der Anleitung
 
-`skill.md` wird vom Dienst selbst ausgeliefert und ist die einzige Quelle.
+Die versionierte Quelle der Anleitung ist `SKILL_TEXT` in `jobstep_mcp.py`.
+Der Dienst liefert diesen Text nach dem Deployment als `skill.md` aus.
 Die Referenz unter `.agents/skills/jobstep-crm/references/service-guide.md`
-ist eine Kopie davon mit Herkunftskopf. Sie wird nicht von Hand bearbeitet.
+ist eine daraus erzeugte Kopie mit Herkunftskopf. Sie wird nicht von Hand bearbeitet.
+Eine Änderung im Repository aktualisiert den laufenden Dienst erst nach einem Deployment.
 
 ---
 
@@ -84,7 +86,15 @@ Liegt dieselbe Unterlage schon vor? Ein zweites Exemplar ist schlimmer als ein f
 | `kandidat_id` | integer | ja | Kandidatennummer |
 | `limit` | integer | nein | Max. Anzahl je Liste 1-100 |
 
-**Abbruchbedingung:** Typ bereits vorhanden mit Status ≥ 9 (Gesendet, Erhalten, Bereit) → **anhalten** und melden. Vorhanden, aber Defekt/Abgelehnt → weiter.
+**Abbruchbedingung:** Alle vorhandenen Dokumente des passenden Typs prüfen. Sobald
+mindestens eines Status **9, 12, 15, 18 oder 27** hat → **anhalten** und melden.
+Diese Sperre gilt auch dann, wenn daneben ein Exemplar mit Status 21 oder 24 liegt.
+Sind ausschließlich passende Dokumente mit **21 (Defekt)** oder **24 (Abgelehnt)**
+vorhanden, darf die erneute Aufnahme mit den folgenden Prüfungen fortfahren;
+der neue Datensatz startet mit **3 (Hochgeladen)**. Alte Datensätze und ihr Verlauf
+bleiben erhalten, ihr Status wird nicht automatisch geändert.
+Kein passendes Dokument → weiter. Vorhandenes Dokument mit **3, 6 oder unbekanntem
+Status** → **anhalten und klären**, keinen weiteren Datensatz anlegen.
 
 ### 3. Dokumenttyp auflösen
 
@@ -161,8 +171,8 @@ Schritt 5) und **Duplikat schlägt fehlend** (Schritt 2 blockiert Schritt 5).
 | 12 | Poslan | Gesendet | tatsächlich übertragen | Mensch, oder Agent mit Sendenachweis |
 | 15 | Imamo original | Erhalten | Original liegt physisch vor | **nur Mensch** |
 | 18 | Spreman | Bereit | endgültig guter Zustand | Mensch |
-| 21 | Nije prosao provjeru | Defekt | Datei unbrauchbar | Agent darf melden, Mensch bestätigt |
-| 24 | Odbijen | Abgelehnt | mit Begründung im Kommentar | **nur Mensch** |
+| 21 | Nije prosao provjeru | Defekt | Datei unbrauchbar; erneute Aufnahme gemäß Schritt 2 erlaubt | Agent darf melden, Mensch bestätigt |
+| 24 | Odbijen | Abgelehnt | mit Begründung im Kommentar; erneute Aufnahme gemäß Schritt 2 erlaubt | **nur Mensch** |
 | 27 | Arhiviran | Archiviert | Endzustand | **nur Mensch**, ausdrückliche Anweisung |
 
 Werkzeug: `unterlage_status_setzen` mit `doc_id`, `status_id`, `kommentar`.

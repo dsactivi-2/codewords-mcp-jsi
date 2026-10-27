@@ -1,14 +1,15 @@
 <!--
-Quelle: https://runtime.codewords.ai/run/jobstep_mcp_4a31136a/skill.md
+Quelle: jobstep_mcp.py, Konstante SKILL_TEXT (Version 2.0.1)
 Dienst: Jobstep Kandidaten-MCP (jobstep_mcp_4a31136a)
-Abgerufen: 2026-10-27
+Dienst-URL: https://runtime.codewords.ai/run/jobstep_mcp_4a31136a/skill.md
+Abgeglichen: 2026-10-27 aus der versionierten Quelle; kein erneuter Live-Abruf.
 Hinweis: automatisch erzeugte Kopie — nicht von Hand bearbeiten.
 -->
 
 ---
 name: jobstep-candidate-operations
 description: Operate the Jobstep recruitment CRM through the Jobstep Candidate MCP. Use whenever a candidate message, an incoming document, a new job order, or a document status question must be handled. Covers candidate identification, required-document reconciliation, document intake, status transitions, notes, contracts and error recovery.
-version: 2.0.0
+version: 2.0.1
 applies_to: codex, claude-desktop, custom-llm-agents
 ---
 
@@ -127,7 +128,8 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 
 ### unterlage_anlegen
 - **Call when:** a verified file must become a document for a specific candidate and order.
-- **Do not call:** without a passing `datei_pruefen`; without a catalogue type; on a duplicate at a worked status.
+- **Do not call:** without a passing `datei_pruefen`; without a catalogue type; when a matching document is at status 9, 12, 15, 18 or 27.
+- **Replacement:** an existing document at 21 (defective) or 24 (rejected) may be replaced by a new intake at status 3 only if no matching document blocks intake. Preserve the old record and its history; do not change its status automatically. For an existing document at 3, 6 or an unknown status, stop and clarify instead of creating a duplicate.
 - **Args:** `kandidat_id`, `nalog_id`, `doc_type_id`, `datei_url`, `doc_status` (default 3), `nrd_id` (optional), `kommentar`.
 - **Behaviour:** validates candidate, order and type; resolves the matching requirement row when `nrd_id` is omitted and ticks the checklist; writes document, file entry and a history line containing the URL.
 - **Then:** confirm with `doc_id`. Never re-create on a timeout — inspect first.
@@ -182,8 +184,13 @@ Never answer from memory if the data could have changed. Re-read once.
 ```
 1. kandidat_identifizieren            -> candidate resolved
 2. kandidat_dokumente                 -> duplicate check
-   - present at status >= 9  -> do NOT duplicate. Report. Stop.
-   - absent / defective      -> continue
+   - check ALL matching documents, not just the latest one
+   - any at 9 / 12 / 15 / 18 / 27 -> do NOT duplicate. Report. Stop.
+     This block takes precedence even if another matching document is at 21 or 24.
+   - only existing matches at 21 (defective) / 24 (rejected) -> replacement intake may continue
+     Keep the old records and history; do not change their status automatically.
+   - no matching document    -> continue
+   - existing match at 3 / 6, or an unknown status -> stop and clarify; do not create
 3. unterlagen_katalog                 -> doc_type_id
    - no plausible type       -> ask the human. Stop.
 4. datei_pruefen(datei_url)           -> GATE
@@ -211,8 +218,8 @@ Never answer from memory if the data could have changed. Re-read once.
 | 12 | Poslan | Gesendet | only after actual transmission | human, or agent with send confirmation |
 | 15 | Imamo original | Erhalten | original physically arrived | human only |
 | 18 | Spreman | Bereit | final good state | human |
-| 21 | Nije prosao provjeru | Defekt | from 3 or 6 only | agent may flag, human confirms |
-| 24 | Odbijen | Abgelehnt | from 3 or 6, reason required | human only |
+| 21 | Nije prosao provjeru | Defekt | from 3 or 6 only; replacement intake allowed under section 6 | agent may flag, human confirms |
+| 24 | Odbijen | Abgelehnt | from 3 or 6, reason required; replacement intake allowed under section 6 | human only |
 | 27 | Arhiviran | Archiviert | terminal | human only, explicit instruction |
 
 Backwards moves (18 to 6, 12 to 6) are legitimate when a document is superseded — always
