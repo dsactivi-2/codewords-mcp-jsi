@@ -17,6 +17,7 @@
 # ///
 
 import asyncio
+import functools
 import json
 import os
 from pathlib import Path
@@ -246,6 +247,35 @@ def _limit(value: Any, default: int = MAX_ROWS) -> int:
     return max(1, min(_num(value, "limit"), HARD_LIMIT))
 
 
+def _kontext_aus(argumente: dict) -> str | None:
+    """Baut den Kontext fuer das Protokoll: die uebergebenen Parameter, gekuerzt."""
+    try:
+        return json.dumps(argumente, ensure_ascii=False) if argumente else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _protokolliert(funktion):
+    """Huelle fuer MCP-Werkzeuge: protokolliert Fehler, bevor sie den Client erreichen.
+
+    Fachliche Ablehnungen werden als Warnung erfasst, technische als Fehler.
+    Die Ausnahme wird unveraendert weitergereicht — das Verhalten bleibt gleich.
+    """
+
+    @functools.wraps(funktion)
+    async def huelle(*args, **kwargs):
+        try:
+            return await funktion(*args, **kwargs)
+        except DienstFehler as fehler:
+            await _protokolliere("Fehler", funktion.__name__, str(fehler), _kontext_aus(kwargs))
+            raise
+        except ValueError as fehler:
+            await _protokolliere("Warnung", funktion.__name__, str(fehler), _kontext_aus(kwargs))
+            raise
+
+    return huelle
+
+
 async def _protokolliere(art: str, werkzeug: str, meldung: str, kontext: str | None = None) -> None:
     """Schreibt Warnung oder Fehler ins Protokoll. Best effort — wirft nie, blockiert nie den Aufruf."""
     try:
@@ -319,6 +349,7 @@ async def _dokumenttyp(doc_type_id: int) -> dict:
 # MCP Tools - Nachschauen
 # -------------------------
 @fast_app.tool()
+@_protokolliert
 async def kandidat_identifizieren(
     suchbegriff: Annotated[str, Field(description="Telefonnummer, E-Mail-Adresse oder Kandidatennummer", min_length=2, max_length=80)],
     limit: Annotated[int, Field(description="Maximale Trefferzahl", ge=1, le=10)] = 5,
@@ -347,6 +378,7 @@ async def kandidat_identifizieren(
 
 
 @fast_app.tool()
+@_protokolliert
 async def kandidat_profil(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
 ) -> dict[str, Any]:
@@ -371,6 +403,7 @@ async def kandidat_profil(
 
 
 @fast_app.tool()
+@_protokolliert
 async def unterlagen_soll(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     nalog_id: Annotated[int | None, Field(description="Auftrag; leer = Auftrag des Kandidaten")] = None,
@@ -431,6 +464,7 @@ async def unterlagen_soll(
 
 
 @fast_app.tool()
+@_protokolliert
 async def unterlagen_katalog(
     limit: Annotated[int, Field(description="Maximale Anzahl Typen", ge=1, le=200)] = MAX_ROWS,
 ) -> dict[str, Any]:
@@ -447,6 +481,7 @@ async def unterlagen_katalog(
 
 
 @fast_app.tool()
+@_protokolliert
 async def job_details(
     nalog_id: Annotated[int, Field(description="Auftragsnummer im CRM")],
 ) -> dict[str, Any]:
@@ -466,6 +501,7 @@ async def job_details(
 
 
 @fast_app.tool()
+@_protokolliert
 async def jobs_fuer_kandidat(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     status_ids: Annotated[list[int], Field(description="Nur diese Auftrags-Status (leer = alle)")] = [],
@@ -504,6 +540,7 @@ async def jobs_fuer_kandidat(
 
 
 @fast_app.tool()
+@_protokolliert
 async def unterlage_verlauf(
     doc_id: Annotated[int, Field(description="Dokumentnummer im CRM")],
 ) -> dict[str, Any]:
@@ -525,6 +562,7 @@ async def unterlage_verlauf(
 
 
 @fast_app.tool()
+@_protokolliert
 async def kandidat_lebenslauf(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
 ) -> dict[str, Any]:
@@ -583,6 +621,7 @@ async def kandidat_lebenslauf(
 
 
 @fast_app.tool()
+@_protokolliert
 async def kandidat_dokumente(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     limit: Annotated[int, Field(description="Maximale Anzahl je Liste", ge=1, le=100)] = 40,
@@ -623,6 +662,7 @@ async def kandidat_dokumente(
 
 
 @fast_app.tool()
+@_protokolliert
 async def kandidat_notizen(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     limit: Annotated[int, Field(description="Maximale Anzahl", ge=1, le=100)] = 30,
@@ -643,6 +683,7 @@ async def kandidat_notizen(
 
 
 @fast_app.tool()
+@_protokolliert
 async def kandidat_vertraege(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     limit: Annotated[int, Field(description="Maximale Anzahl", ge=1, le=100)] = 20,
@@ -680,6 +721,7 @@ async def kandidat_vertraege(
 # MCP Tools - Eintragen
 # -------------------------
 @fast_app.tool()
+@_protokolliert
 async def unterlage_anlegen(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     nalog_id: Annotated[int, Field(description="Auftragsnummer im CRM")],
@@ -762,6 +804,7 @@ async def unterlage_anlegen(
 
 
 @fast_app.tool()
+@_protokolliert
 async def unterlage_status_setzen(
     doc_id: Annotated[int, Field(description="Dokumentnummer im CRM")],
     status_id: Annotated[int, Field(description="Zielstatus aus der Statusleiter")],
@@ -799,6 +842,7 @@ async def unterlage_status_setzen(
 
 
 @fast_app.tool()
+@_protokolliert
 async def unterlage_anfordern(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     nalog_id: Annotated[int, Field(description="Auftragsnummer im CRM")],
@@ -833,6 +877,7 @@ async def unterlage_anfordern(
 
 
 @fast_app.tool()
+@_protokolliert
 async def notiz_anlegen(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     text: Annotated[str, Field(description="Inhalt der Notiz", min_length=3, max_length=900)],
@@ -848,6 +893,7 @@ async def notiz_anlegen(
 
 
 @fast_app.tool()
+@_protokolliert
 async def kontakt_korrigieren(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     telefon: Annotated[str | None, Field(description="Neue Telefonnummer", max_length=40)] = None,
@@ -877,6 +923,7 @@ async def kontakt_korrigieren(
 # MCP Tools - Dateien
 # -------------------------
 @fast_app.tool()
+@_protokolliert
 async def datei_pruefen(
     datei_url: Annotated[str, Field(description="Oeffentliche https-Adresse der abgelegten Datei", min_length=10, max_length=500)],
 ) -> dict[str, Any]:
@@ -908,6 +955,7 @@ async def datei_pruefen(
 
 
 @fast_app.tool()
+@_protokolliert
 async def datei_bestaetigen(
     doc_id: Annotated[int, Field(description="Dokumentnummer im CRM")],
     datei_url: Annotated[str, Field(description="Oeffentliche https-Adresse der Datei", min_length=10, max_length=500)],
@@ -1530,14 +1578,12 @@ def create_fastapi_app() -> FastAPI:
             raise
         except DienstFehler as fehler:
             logger.error("Werkzeug-Test Dienstfehler", werkzeug=werkzeug, fehler=str(fehler)[:300])
-            await _protokolliere("Fehler", werkzeug, str(fehler), json.dumps(parameter, ensure_ascii=False))
             raise HTTPException(
                 status_code=500,
                 detail=f"Dienstfehler bei '{werkzeug}': {fehler}",
             ) from fehler
         except ValueError as fehler:
             logger.warning("Werkzeug-Test abgelehnt", werkzeug=werkzeug, grund=str(fehler)[:200])
-            await _protokolliere("Warnung", werkzeug, str(fehler), json.dumps(parameter, ensure_ascii=False))
             raise HTTPException(status_code=400, detail=str(fehler) or "Ungueltiger Wert") from fehler
         except TypeError as fehler:
             raise HTTPException(
