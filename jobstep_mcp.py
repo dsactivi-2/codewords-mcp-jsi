@@ -1480,6 +1480,28 @@ def create_fastapi_app() -> FastAPI:
                 detail=f"Pflichtparameter fehlt: {', '.join(fehlend)}",
             )
 
+        # Statuswerte vor dem Werkzeugaufruf pruefen — sonst ersetzt die MCP-Bibliothek
+        # die klare Meldung durch einen generischen Parameterkonflikt.
+        status_wert: Any = None
+        if werkzeug == "unterlage_status_setzen":
+            status_wert = parameter.get("status_id")
+        elif "doc_status" in parameter:
+            status_wert = parameter.get("doc_status")
+        if status_wert is not None:
+            try:
+                status_zahl = int(status_wert)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Status muss eine Zahl sein, erhalten: {status_wert!r}",
+                )
+            if status_zahl not in DOC_STATUS:
+                erlaubt = ", ".join(f"{k} {v}" for k, v in sorted(DOC_STATUS.items()))
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unbekannter Status: {status_zahl}. Erlaubt sind: {erlaubt}",
+                )
+
         ziel = getattr(funktion, "fn", funktion)
         logger.info("Werkzeug-Test", werkzeug=werkzeug)
         try:
