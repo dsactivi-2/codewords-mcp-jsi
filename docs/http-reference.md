@@ -107,26 +107,27 @@ curl -s -X POST "$BASE/test/kandidat_identifizieren" \
 | fehlende oder falsche Anmeldung | `401` | `{"detail":"Unauthorized"}` |
 | unbekannter Werkzeugname | `404` | `{"detail":"Unbekanntes Werkzeug: <name>"}` |
 | `GET` statt `POST` | `405` | `{"detail":"Method Not Allowed"}` |
-| Prüffehler (fehlender Pflichtwert, ungültiger Status) | `500` | Stacktrace — **siehe Defekt unten** |
+| Prüffehler (fehlender Pflichtwert, ungültiger Status) | `400` | `{"detail":"Pflichtparameter fehlt: ..."}` |
 
-### Defekt: Prüffehler liefern 500 statt 400
+### Korrigiert am 27.10.2026
 
-Am 27.10.2026 gemessen: `unterlage_status_setzen` ohne `doc_id` und mit `status_id: 99`
-antworten beide mit `500 Internal Server Error` und einem vollständigen Python-Stacktrace,
-inklusive interner Dateipfade wie `.cache/uv/environments-v2/...`.
+Der Endpunkt antwortet bei Eingabefehlern jetzt mit `400` und klarer Meldung,
+ohne Python-Stacktrace. Gemessen nach dem Deploy:
 
-Drei Folgen:
+| Situation | Status | Antwort |
+|---|---|---|
+| Pflichtparameter fehlt | `400` | `{"detail":"Pflichtparameter fehlt: doc_id, status_id"}` |
+| ungültiger Statuswert | `400` | `{"detail":"Parameter passen nicht zum Werkzeug 'unterlage_status_setzen': ..."}` |
+| unbekanntes Werkzeug | `404` | `{"detail":"Unbekanntes Werkzeug: gibt_es_nicht"}` |
+| Erfolgsfall | `200` | Ergebnis des Werkzeugs |
 
-1. **Falsche Einordnung.** Ein `500` heißt für jeden Client „Server gestört, später erneut
-   versuchen". Tatsächlich ist die Eingabe falsch — Wiederholen ändert nichts.
-2. **Informationsleck.** Der Stacktrace nennt interne Pfade und Modulnamen.
-3. **Abweichung von der Anleitung.** `docs/error-recovery.md` beschreibt Meldungen wie
-   `Unbekannter Status` und `Kandidat ... existiert nicht`. Diese Texte stehen im
-   Stacktrace, sind aber nicht sauber als Feldfehler abrufbar.
+Damit gilt: ein `400` heißt „Eingabe falsch, nicht wiederholen" — ein `500` heißt
+„Dienst gestört, melden". Diese Unterscheidung war vorher nicht möglich.
 
-**Sollverhalten:** `400` mit `{"detail":"Unbekannter Status: 99"}` — ohne Stacktrace.
-Bis zur Korrektur gilt: bei `500` den Rumpf nach dem Feldnamen durchsuchen, nicht blind
-wiederholen.
+**Verbleibende Einschränkung:** Beim ungültigen Statuswert ist der Statuscode richtig,
+die Meldung aber ungenau — sie nennt einen Parameterkonflikt statt `Unbekannter Status: 99`.
+Ursache ist die Fehlerumwandlung der MCP-Bibliothek, die den ursprünglichen Text ersetzt.
+Der Feldname lässt sich im Rumpf trotzdem finden; die Ursache steht im Dienstprotokoll.
 
 ---
 
