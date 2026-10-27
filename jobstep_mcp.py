@@ -379,26 +379,35 @@ async def unterlagen_soll(
         f"WHERE d.nrd_nalog_id = {nid} AND d.nrd_status = 1 "
         "ORDER BY t.doc_type_name LIMIT 60"
     )
-    # Read the newest unsuperseded document per requirement, not the largest
-    # status number. Rejected predecessors remain available in the history.
+    # Every unsuperseded row on the requirement counts. A blocking status
+    # outranks a newer rejection; several current rows are not one gap.
     vorhanden = await db(
         "SELECT d.doc_nrd_id, d.doc_id, d.doc_status AS status, d.doc_replaces_id, "
         "(SELECT COUNT(*) FROM idk_pp_documents h WHERE h.doc_candidate_id = d.doc_candidate_id "
         "AND h.doc_nalog_id = d.doc_nalog_id AND h.doc_nrd_id = d.doc_nrd_id) AS anzahl "
         "FROM idk_pp_documents d "
         f"WHERE d.doc_candidate_id = {kid} AND d.doc_nalog_id = {nid} "
-        "AND NOT EXISTS (SELECT 1 FROM idk_pp_documents child WHERE child.doc_replaces_id = d.doc_id) "
-        "AND NOT EXISTS (SELECT 1 FROM idk_pp_documents newer "
-        "WHERE newer.doc_candidate_id = d.doc_candidate_id AND newer.doc_nalog_id = d.doc_nalog_id "
-        "AND newer.doc_nrd_id = d.doc_nrd_id AND newer.doc_id > d.doc_id "
-        "AND NOT EXISTS (SELECT 1 FROM idk_pp_documents c WHERE c.doc_replaces_id = newer.doc_id))"
+        "AND NOT EXISTS (SELECT 1 FROM idk_pp_documents child WHERE child.doc_replaces_id = d.doc_id)"
     )
-    ist = {r["doc_nrd_id"]: r for r in vorhanden}
+    gruppen: dict[Any, list[dict]] = {}
+    for row in vorhanden:
+        gruppen.setdefault(row["doc_nrd_id"], []).append(row)
+    ist: dict[Any, dict] = {}
+    for nrd, rows in gruppen.items():
+        blockers = [row for row in rows if row.get("status") not in (21, 24)]
+        selected = dict(max(blockers or rows, key=lambda row: row["doc_id"]))
+        selected["aktuell"] = len(rows)
+        # Several rejected rows have no single predecessor intake will accept.
+        if selected["aktuell"] > 1 and selected.get("status") in (21, 24):
+            selected["doc_id"] = None
+            selected["doc_replaces_id"] = None
+        ist[nrd] = selected
 
     liste = []
     for eintrag in erforderlich:
         treffer = ist.get(eintrag["nrd_id"], {})
         status = treffer.get("status")
+        aktuell = treffer.get("aktuell", 0)
         liste.append(
             {
                 "nrd_id": eintrag["nrd_id"],
@@ -411,7 +420,7 @@ async def unterlagen_soll(
                 "doc_id": treffer.get("doc_id"),
                 "ersetzt_doc_id": treffer.get("doc_replaces_id"),
                 "pruefung_offen": status == 3,
-                "fehlt": not treffer or status in (21, 24),
+                "fehlt": not treffer or (aktuell == 1 and status in (21, 24)),
             }
         )
     fehlend = [x for x in liste if x["fehlt"]]
@@ -1194,7 +1203,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### unterlagen_soll
 - **Call when:** deciding what to request; before every `unterlage_anfordern`; after intake to confirm the gap closed.
 - **Do not call:** for a candidate without an order and without a `nalog_id` you can supply.
-- **Returns:** per required document `doc_type_id`, names, historical count, current `doc_id`, `ersetzt_doc_id`, status, `pruefung_offen` and `fehlt`; plus `fehlend_anzahl`. Current status is from the newest unsuperseded document, never the largest status number. A current 21 or 24 remains missing; a new 3 is uploaded but still awaits human review. Historical count alone never proves successful replacement.
+- **Returns:** per required document `doc_type_id`, names, historical count, current `doc_id`, `ersetzt_doc_id`, status, `pruefung_offen` and `fehlt`; plus `fehlend_anzahl`. Current status is the newest unsuperseded blocking document when one exists, otherwise the newest unsuperseded document, never the largest status number. Exactly one current 21 or 24 remains missing; several current documents on that requirement are not a replaceable gap. A new 3 is uploaded but still awaits human review. Historical count alone never proves successful replacement.
 - **Then:** request only `fehlt: true` entries. `pflicht_gesamt` 0 → escalate, do not assume.
 
 ### unterlagen_katalog
@@ -1220,7 +1229,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### kandidat_dokumente
 - **Call when:** duplicate check before intake; after a failed write.
 - **Do not call:** to decide what is missing — that requires `unterlagen_soll`.
-- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type, order, status, `ersetzt_doc_id`, `ersetzt_durch_doc_id` and `aktuell`. This display list is limited; absence from its first page is not proof of absence. Intake checks all matching database records without that limit, scoped to candidate, order and document type.
+- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type, order, status, `ersetzt_doc_id`, `ersetzt_durch_doc_id` and `aktuell`. This display list is limited; absence from its first page is not proof of absence. Intake checks all matching database records without that limit, scoped to candidate, order, document type and requirement.
 
 ### kandidat_notizen
 - **Call when:** continuing a conversation or reviewing agent activity.
@@ -1292,10 +1301,10 @@ Never answer from memory if the data could have changed. Re-read once.
 
 ```
 1. kandidat_identifizieren -> resolve the candidate and their order; never guess either
-2. kandidat_dokumente -> inspect the matching type in that order, including replacement links
-   - current 3 / 6 / 9 / 12 / 15 / 18 / 27 / unknown -> stop and clarify; do not duplicate
-   - exactly one current 21 / 24 -> retain its doc_id as the explicit predecessor
-   - no matching document -> initial intake
+2. kandidat_dokumente -> inspect the matching type and requirement in that order, including replacement links
+   - current 3 / 6 / 9 / 12 / 15 / 18 / 27 / unknown on that requirement -> stop and clarify; do not duplicate
+   - exactly one current 21 / 24 on that requirement -> retain its doc_id as the explicit predecessor
+   - no matching document on that requirement -> initial intake
    - incomplete or ambiguous legacy data -> stop and clarify
 3. unterlagen_katalog -> resolve doc_type_id; ensure the predecessor belongs to it
    - no plausible type -> ask the human; stop
@@ -1311,8 +1320,9 @@ Never answer from memory if the data could have changed. Re-read once.
 ```
 
 Superseded predecessors do not block their successors. A different current blocking
-document takes precedence over a 21/24 replacement request. Check the candidate,
-order and type together. An optional note is only for information absent from history.
+document on the same requirement takes precedence over a 21/24 replacement request.
+Another requirement of the same type does not. Check the candidate, order, type and
+requirement together. An optional note is only for information absent from history.
 
 **No gate, no write. Duplicate beats missing. Old history stays; the new document is current.**
 

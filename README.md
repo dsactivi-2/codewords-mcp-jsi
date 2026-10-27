@@ -85,8 +85,8 @@ Liegt dieselbe Unterlage schon vor? Ein zweites Exemplar ist schlimmer als ein f
 | `kandidat_id` | integer | ja | Kandidatennummer |
 | `limit` | integer | nein | Max. Anzahl je Liste 1-100 |
 
-**Abbruchbedingung:** Kandidat, Auftrag und Dokumenttyp zusammen prüfen.
-Ein aktuelles Dokument mit Status **3, 6, 9, 12, 15, 18, 27 oder unbekanntem Status**
+**Abbruchbedingung:** Kandidat, Auftrag, Dokumenttyp und Pflichtposition zusammen prüfen.
+Ein aktuelles Dokument derselben Pflichtposition mit Status **3, 6, 9, 12, 15, 18, 27 oder unbekanntem Status**
 blockiert eine weitere Aufnahme. Wurde ein altes Dokument ausdrücklich ersetzt,
 bleibt es im Verlauf und blockiert den Nachfolger nicht.
 Genau ein aktuelles Dokument mit **21 (Defekt)** oder **24 (Abgelehnt)** darf über

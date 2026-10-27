@@ -12,12 +12,12 @@ Status 3 heißt „Hochgeladen“, nicht „von einem Menschen geprüft“.
 - Der Python-Dienst ruft diese Routine einmal auf. Kandidatensperre, vollständige
   Duplikatprüfung ohne Listenlimit, Dokument, Dateieintrag und Verlauf liegen in einer
   Transaktion auf derselben Verbindung. Jeder Fehler rollt die drei Einträge zurück.
-- Der Schlüssel für eine Aufnahme ergibt sich aus Kandidat, Auftrag, Typ und Vorgänger.
+- Der Schlüssel für eine Aufnahme ergibt sich aus Kandidat, Auftrag, Typ, Pflichtposition und Vorgänger.
   Identische Aufrufe liefern dieselbe ID; eine andere Datei für denselben Vorgang
   wird abgewiesen. Ein Vorgänger darf nur einen direkten Nachfolger haben.
 - Ersatz ist nur für 21/24 erlaubt. Andere aktuelle Zustände, unbekannte Alt-Typen,
   mehrere aktuelle Alt-Dokumente und falsche Zuordnung führen zum Abbruch.
-- Derselbe Typ in einem anderen Auftrag oder bei einem anderen Kandidaten blockiert nicht.
+- Derselbe Typ auf einer anderen Pflichtposition, in einem anderen Auftrag oder bei einem anderen Kandidaten blockiert nicht.
 - Der Vorgänger wird vor der Prüfung gesperrt. Ein SQL-Trigger verhindert danach,
   dass Status, Datei oder Zuordnung eines bereits ersetzten Dokuments überschrieben
   werden — auch über die bisherige CRM-Schreibstrecke. Das Team muss den aktuellen

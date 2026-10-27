@@ -314,6 +314,45 @@ class IntakeTests(unittest.IsolatedAsyncioTestCase):
             await self.intake()
         self.assertGreater((await self.intake(nrd_id=10))['doc_id'], 0)
 
+    async def test_same_type_requirements_are_fulfilled_independently(self):
+        mysql('INSERT INTO idk_pp_nalog_required_documents VALUES(13,20,30,1);')
+        first = await self.intake(nrd_id=10)
+        second = await self.intake(nrd_id=13)
+        self.assertNotEqual(first['doc_id'], second['doc_id'])
+        replay = await self.intake(nrd_id=13)
+        self.assertEqual(replay['doc_id'], second['doc_id'])
+        self.assertTrue(replay['wiederverwendet'])
+        rows = {x['nrd_id']: x for x in (await self.tools.unterlagen_soll(100, 30))['unterlagen']}
+        self.assertEqual((rows[10]['doc_id'], rows[10]['fehlt']), (first['doc_id'], False))
+        self.assertEqual((rows[13]['doc_id'], rows[13]['fehlt']), (second['doc_id'], False))
+        self.assertEqual(self.counts(), (2, 2, 2))
+
+    async def test_same_type_rejection_is_replaced_beside_current_sibling(self):
+        mysql('INSERT INTO idk_pp_nalog_required_documents VALUES(13,20,30,1);')
+        await self.intake(nrd_id=10)
+        old = self.old(24, requirement=13)
+        result = await self.intake(nrd_id=13, ersetzt_doc_id=old, datei_url='https://files.example/second.pdf')
+        self.assertEqual(result['ersetzt_doc_id'], old)
+        row = next(x for x in (await self.tools.unterlagen_soll(100, 30))['unterlagen'] if x['nrd_id'] == 13)
+        self.assertEqual((row['doc_id'], row['fehlt']), (result['doc_id'], False))
+
+    async def test_older_blocker_is_not_hidden_by_newer_rejection(self):
+        blocker = self.old(3)
+        rejected = self.old(24)
+        passport = next(x for x in (await self.tools.unterlagen_soll(100, 30))['unterlagen'] if x['doc_type_id'] == 20)
+        self.assertEqual((passport['doc_id'], passport['status'], passport['fehlt']), (blocker, 3, False))
+        with self.assertRaises(ToolError):
+            await self.intake(ersetzt_doc_id=rejected)
+        self.assertEqual(self.counts(), (2, 0, 2))
+
+    async def test_multiple_current_rejections_are_not_one_gap(self):
+        self.old(24)
+        self.old(21)
+        passport = next(x for x in (await self.tools.unterlagen_soll(100, 30))['unterlagen'] if x['doc_type_id'] == 20)
+        self.assertFalse(passport['fehlt'])
+        self.assertIsNone(passport['doc_id'])
+        self.assertIsNone(passport['ersetzt_doc_id'])
+
     async def test_multiple_legacy_rejections_require_clarification(self):
         self.old(24)
         old = self.old(21)

@@ -122,7 +122,8 @@ intake: BEGIN
             WHERE nrd_nalog_id = p_order AND nrd_type_id = p_type AND nrd_status = 1;
     END IF;
 
-    SET v_key = SHA2(CONCAT(p_candidate, ':', p_order, ':', p_type, ':', COALESCE(p_replaces, 0)), 256);
+    -- Two checklist rows of one type are different operations.
+    SET v_key = SHA2(CONCAT(p_candidate, ':', p_order, ':', p_type, ':', COALESCE(v_requirement, 0), ':', COALESCE(p_replaces, 0)), 256);
     SELECT doc_id INTO v_doc FROM idk_pp_documents WHERE doc_intake_key = v_key;
     IF v_doc IS NOT NULL THEN
         -- Same operation and exact file: replay the committed result, never reset status.
@@ -146,11 +147,13 @@ intake: BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Altbestand ohne Dokumenttyp: manuell klaeren';
     END IF;
 
-    -- No LIMIT: older blocking documents cannot disappear behind the first tool page.
+    -- No LIMIT: older blocking documents on this requirement cannot disappear
+    -- behind the first tool page. Another requirement of the same type is a separate slot.
     IF EXISTS (SELECT 1 FROM idk_pp_documents d
         LEFT JOIN idk_pp_nalog_required_documents r ON r.nrd_id = d.doc_nrd_id
         WHERE d.doc_candidate_id = p_candidate AND d.doc_nalog_id = p_order
           AND COALESCE(d.doc_intake_type_id, r.nrd_type_id) = p_type
+          AND d.doc_nrd_id <=> v_requirement
           AND NOT EXISTS (SELECT 1 FROM idk_pp_documents child WHERE child.doc_replaces_id = d.doc_id)
           AND (d.doc_status IS NULL OR d.doc_status NOT IN (21, 24))) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Vorhandenes aktuelles Dokument blockiert Intake';
@@ -160,6 +163,7 @@ intake: BEGIN
         LEFT JOIN idk_pp_nalog_required_documents r ON r.nrd_id = d.doc_nrd_id
         WHERE d.doc_candidate_id = p_candidate AND d.doc_nalog_id = p_order
           AND COALESCE(d.doc_intake_type_id, r.nrd_type_id) = p_type
+          AND d.doc_nrd_id <=> v_requirement
           AND NOT EXISTS (SELECT 1 FROM idk_pp_documents child WHERE child.doc_replaces_id = d.doc_id);
     IF v_count > 1 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Mehrere aktuelle Alt-Dokumente: manuell klaeren';

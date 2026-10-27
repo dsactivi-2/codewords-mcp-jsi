@@ -76,7 +76,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### unterlagen_soll
 - **Call when:** deciding what to request; before every `unterlage_anfordern`; after intake to confirm the gap closed.
 - **Do not call:** for a candidate without an order and without a `nalog_id` you can supply.
-- **Returns:** per required document `doc_type_id`, names, historical count, current `doc_id`, `ersetzt_doc_id`, status, `pruefung_offen` and `fehlt`; plus `fehlend_anzahl`. Current status is from the newest unsuperseded document, never the largest status number. A current 21 or 24 remains missing; a new 3 is uploaded but still awaits human review. Historical count alone never proves successful replacement.
+- **Returns:** per required document `doc_type_id`, names, historical count, current `doc_id`, `ersetzt_doc_id`, status, `pruefung_offen` and `fehlt`; plus `fehlend_anzahl`. Current status is the newest unsuperseded blocking document when one exists, otherwise the newest unsuperseded document, never the largest status number. Exactly one current 21 or 24 remains missing; several current documents on that requirement are not a replaceable gap. A new 3 is uploaded but still awaits human review. Historical count alone never proves successful replacement.
 - **Then:** request only `fehlt: true` entries. `pflicht_gesamt` 0 → escalate, do not assume.
 
 ### unterlagen_katalog
@@ -102,7 +102,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### kandidat_dokumente
 - **Call when:** duplicate check before intake; after a failed write.
 - **Do not call:** to decide what is missing — that requires `unterlagen_soll`.
-- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type, order, status, `ersetzt_doc_id`, `ersetzt_durch_doc_id` and `aktuell`. This display list is limited; absence from its first page is not proof of absence. Intake checks all matching database records without that limit, scoped to candidate, order and document type.
+- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type, order, status, `ersetzt_doc_id`, `ersetzt_durch_doc_id` and `aktuell`. This display list is limited; absence from its first page is not proof of absence. Intake checks all matching database records without that limit, scoped to candidate, order, document type and requirement.
 
 ### kandidat_notizen
 - **Call when:** continuing a conversation or reviewing agent activity.
@@ -174,10 +174,10 @@ Never answer from memory if the data could have changed. Re-read once.
 
 ```
 1. kandidat_identifizieren -> resolve the candidate and their order; never guess either
-2. kandidat_dokumente -> inspect the matching type in that order, including replacement links
-   - current 3 / 6 / 9 / 12 / 15 / 18 / 27 / unknown -> stop and clarify; do not duplicate
-   - exactly one current 21 / 24 -> retain its doc_id as the explicit predecessor
-   - no matching document -> initial intake
+2. kandidat_dokumente -> inspect the matching type and requirement in that order, including replacement links
+   - current 3 / 6 / 9 / 12 / 15 / 18 / 27 / unknown on that requirement -> stop and clarify; do not duplicate
+   - exactly one current 21 / 24 on that requirement -> retain its doc_id as the explicit predecessor
+   - no matching document on that requirement -> initial intake
    - incomplete or ambiguous legacy data -> stop and clarify
 3. unterlagen_katalog -> resolve doc_type_id; ensure the predecessor belongs to it
    - no plausible type -> ask the human; stop
@@ -193,8 +193,9 @@ Never answer from memory if the data could have changed. Re-read once.
 ```
 
 Superseded predecessors do not block their successors. A different current blocking
-document takes precedence over a 21/24 replacement request. Check the candidate,
-order and type together. An optional note is only for information absent from history.
+document on the same requirement takes precedence over a 21/24 replacement request.
+Another requirement of the same type does not. Check the candidate, order, type and
+requirement together. An optional note is only for information absent from history.
 
 **No gate, no write. Duplicate beats missing. Old history stays; the new document is current.**
 
