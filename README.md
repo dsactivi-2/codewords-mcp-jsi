@@ -204,3 +204,31 @@ wörtlichen Meldung · was bereits versucht wurde.
 - [`docs/error-recovery.md`](docs/error-recovery.md) — neun Fehlersignale
 - [`docs/rollout-checklist.md`](docs/rollout-checklist.md) — Roll-out und Freigabe
 - [`docs/team-anleitung.md`](docs/team-anleitung.md) — Anleitung fuer Mitarbeiter
+
+## Automatischer Abgleich
+
+`/skill.md` ist die einzige Quelle. Beide Anleitungsdateien werden daraus erzeugt:
+
+| Erzeugt | Warum |
+|---|---|
+| `skills/jobstep-crm/SKILL.md` | Plugin-Pruefer sucht `skills/*/SKILL.md` |
+| `.agents/skills/jobstep-crm/references/service-guide.md` | Codex-Skill-Referenz, mit Herkunftskopf |
+
+**Nicht erzeugt:** `AGENTS.md`. Aendert der Dienst die Intake-Reihenfolge, ist das eine
+menschliche Entscheidung — die Datei wird nie automatisch nachgezogen.
+
+**Einmalig einrichten:** Repository -> Settings -> Secrets and variables -> Actions ->
+`CODEWORDS_API_KEY` anlegen.
+
+**Lauf:** taeglich 06:00 (Europe/Sarajevo) oder manuell unter Actions.
+Bei Aenderung entsteht ein Pull Request auf `sync/skill-md`; ohne inhaltliche
+Aenderung passiert nichts. Nur ein neues Abrufdatum zaehlt nicht — der Vergleich
+laeuft ueber den Rumpf, nicht ueber die Kopfzeile.
+
+**Lokal pruefen:**
+```bash
+export CODEWORDS_API_KEY=...
+bash scripts/sync-skill.sh
+```
+Rueckgabewert 0 bei Erfolg, 1 bei fehlgeschlagener Plausibilitaetspruefung —
+dann bleiben die vorhandenen Dateien unberuehrt.
