@@ -11,7 +11,7 @@ ein Teil der Einträge künftig nicht von Menschen stammt.
 
 ## 1. Was er kann
 
-Vierzehn feste Fähigkeiten. Er kann nichts anderes — keine eigenen Abfragen, keine Massenänderungen.
+Achtzehn feste Fähigkeiten. Er kann nichts anderes — keine eigenen Abfragen, keine Massenänderungen.
 
 | Bereich | Im Klartext |
 |---|---|
@@ -25,6 +25,10 @@ Vierzehn feste Fähigkeiten. Er kann nichts anderes — keine eigenen Abfragen, 
 | Notieren | Gesprächsnotiz am Kandidaten. |
 | Kontakt berichtigen | Nur Telefon und E-Mail — mehr Felder kann er nicht anfassen. |
 | Dateien prüfen | Adresse testen, bevor sie in die Akte kommt. Keine toten Verweise. |
+| Lebenslauf lesen | Ausbildung, Berufserfahrung, Sprachen mit Niveau, Kenntnisse, CV-Dateien. |
+| Dokumente auflisten | Was schon vorliegt — Akten-Dateien und Verfahrensunterlagen mit Typ und Status. |
+| Notizen lesen | Alle Notizen, neueste zuerst; Agent-Einträge sind markiert. |
+| Verträge und Zahlungen | Unterschriftsstand und Zahlungsstand auf einen Blick. |
 
 ---
 

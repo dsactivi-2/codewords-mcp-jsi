@@ -46,11 +46,10 @@ Status 6 und 15 sind menschlichen Bearbeitern vorbehalten.
 
 ## Herkunft der Anleitung
 
-Die versionierte Quelle der Anleitung ist `SKILL_TEXT` in `jobstep_mcp.py`.
-Der Dienst liefert diesen Text nach dem Deployment als `skill.md` aus.
-Die Referenz unter `.agents/skills/jobstep-crm/references/service-guide.md`
-ist eine daraus erzeugte Kopie mit Herkunftskopf. Sie wird nicht von Hand bearbeitet.
-Eine Änderung im Repository aktualisiert den laufenden Dienst erst nach einem Deployment.
+Die versionierte Quelle ist `SKILL_TEXT` in `jobstep_mcp.py`; nach einem Deployment
+liefert der Dienst sie als `skill.md` aus. Die Referenz unter
+`.agents/skills/jobstep-crm/references/service-guide.md` wird daraus erzeugt.
+**Dieser PR bereitet Version 3.0.0 vor; der laufende Dienst wurde nicht geändert.**
 
 ---
 
@@ -86,15 +85,15 @@ Liegt dieselbe Unterlage schon vor? Ein zweites Exemplar ist schlimmer als ein f
 | `kandidat_id` | integer | ja | Kandidatennummer |
 | `limit` | integer | nein | Max. Anzahl je Liste 1-100 |
 
-**Abbruchbedingung:** Alle vorhandenen Dokumente des passenden Typs prüfen. Sobald
-mindestens eines Status **9, 12, 15, 18 oder 27** hat → **anhalten** und melden.
-Diese Sperre gilt auch dann, wenn daneben ein Exemplar mit Status 21 oder 24 liegt.
-Sind ausschließlich passende Dokumente mit **21 (Defekt)** oder **24 (Abgelehnt)**
-vorhanden, darf die erneute Aufnahme mit den folgenden Prüfungen fortfahren;
-der neue Datensatz startet mit **3 (Hochgeladen)**. Alte Datensätze und ihr Verlauf
-bleiben erhalten, ihr Status wird nicht automatisch geändert.
-Kein passendes Dokument → weiter. Vorhandenes Dokument mit **3, 6 oder unbekanntem
-Status** → **anhalten und klären**, keinen weiteren Datensatz anlegen.
+**Abbruchbedingung:** Kandidat, Auftrag und Dokumenttyp zusammen prüfen.
+Ein aktuelles Dokument mit Status **3, 6, 9, 12, 15, 18, 27 oder unbekanntem Status**
+blockiert eine weitere Aufnahme. Wurde ein altes Dokument ausdrücklich ersetzt,
+bleibt es im Verlauf und blockiert den Nachfolger nicht.
+Genau ein aktuelles Dokument mit **21 (Defekt)** oder **24 (Abgelehnt)** darf über
+seine `doc_id` als `ersetzt_doc_id` ersetzt werden. Mehrere aktuelle Alt-Dokumente
+oder unklare Typzuordnung → anhalten und klären.
+Die angezeigte Liste ist begrenzt; der schreibende Dienst prüft zusätzlich alle
+passenden Datensätze ohne diese Begrenzung.
 
 ### 3. Dokumenttyp auflösen
 
@@ -132,11 +131,17 @@ Der eigentliche Schreibvorgang: Dokument, Akteneintrag und Verlauf in einem.
 | `nalog_id` | integer | ja | Auftragsnummer |
 | `doc_type_id` | integer | ja | Dokumenttyp aus unterlagen_katalog |
 | `datei_url` | string | ja | Oeffentliche https-Adresse der Datei |
-| `doc_status` | integer | nein | Startstatus, Standard 3 = Hochgeladen |
+| `doc_status` | integer | nein | Startstatus: ausschließlich 3 = Hochgeladen |
 | `nrd_id` | integer | nein | Pflichtposition, gegen die abgehakt wird |
 | `kommentar` | string | nein | Kurzer Hinweis fuer das Team |
+| `ersetzt_doc_id` | integer | bei Ersatz ja | Nummer des ersetzten Dokuments mit Status 21/24 |
 
-**Abbruchbedingung:** Erfolg nur mit `doc_id` in der Antwort. Ohne `nalog_id` vorher `kandidat_profil` lesen. Ohne `nrd_id` sucht der Dienst die Pflichtposition selbst und hakt sie ab.
+**Abbruchbedingung:** Erfolg nur mit `doc_id` in der Antwort. Ohne `nalog_id` vorher
+`kandidat_profil` lesen. Ohne `nrd_id` wird nur eine eindeutige Pflichtposition automatisch
+zugeordnet. Dokument, Akteneintrag und Verlauf werden gemeinsam gespeichert oder
+vollständig zurückgerollt. Gleiche Aufrufe liefern dieselbe `doc_id` mit
+`wiederverwendet: true`; auch parallele Aufrufe erzeugen keine zweite Aufnahme.
+Bei Ersatz bleiben der alte Datensatz und sein Verlauf unverändert.
 
 ### 6. Lücke bestätigen
 
@@ -149,7 +154,12 @@ Nachkontrolle. Erst damit ist der Vorgang abgeschlossen.
 | `kandidat_id` | integer | ja | Kandidatennummer |
 | `nalog_id` | integer | nein | Auftrag; leer = Auftrag des Kandidaten |
 
-**Abbruchbedingung:** `fehlt` muss für den Typ auf `false` stehen bzw. der Zähler gestiegen sein. Nicht geschlossen → **nicht neu anlegen**, mit `doc_id` melden.
+**Abbruchbedingung:** Für den passenden Typ müssen `doc_id` und bei Ersatz
+`ersetzt_doc_id` mit dem Ergebnis übereinstimmen; `fehlt` muss `false` sein.
+Der neue Pass wird als **3 – Hochgeladen**, `pruefung_offen: true` angezeigt;
+eine menschliche Prüfung wird dadurch nicht vorgetäuscht.
+Ein höherer historischer Zähler allein reicht nicht. Abweichung → **nicht neu anlegen**,
+mit `doc_id` melden.
 
 ### Reihenfolge als Prüfliste
 
@@ -171,8 +181,8 @@ Schritt 5) und **Duplikat schlägt fehlend** (Schritt 2 blockiert Schritt 5).
 | 12 | Poslan | Gesendet | tatsächlich übertragen | Mensch, oder Agent mit Sendenachweis |
 | 15 | Imamo original | Erhalten | Original liegt physisch vor | **nur Mensch** |
 | 18 | Spreman | Bereit | endgültig guter Zustand | Mensch |
-| 21 | Nije prosao provjeru | Defekt | Datei unbrauchbar; erneute Aufnahme gemäß Schritt 2 erlaubt | Agent darf melden, Mensch bestätigt |
-| 24 | Odbijen | Abgelehnt | mit Begründung im Kommentar; erneute Aufnahme gemäß Schritt 2 erlaubt | **nur Mensch** |
+| 21 | Nije prosao provjeru | Defekt | Datei unbrauchbar; explizite Ersatzaufnahme erlaubt | Agent darf melden, Mensch bestätigt |
+| 24 | Odbijen | Abgelehnt | mit Begründung; explizite Ersatzaufnahme erlaubt | **nur Mensch** |
 | 27 | Arhiviran | Archiviert | Endzustand | **nur Mensch**, ausdrückliche Anweisung |
 
 Werkzeug: `unterlage_status_setzen` mit `doc_id`, `status_id`, `kommentar`.
@@ -182,6 +192,9 @@ Rückwärtsbewegungen (18 → 6, 12 → 6) sind zulässig, wenn eine Unterlage e
 Immer mit Kommentar: eine unbegründete Rückstufung sieht aus wie ein Fehler.
 
 ### Fehlerbehebung
+
+> Ausführliche Fassung mit Wiederholungsregeln und Übergabekriterien je Signal:
+> [`docs/error-recovery.md`](docs/error-recovery.md)
 
 | Meldung / Signal | Ursache | Was zu tun ist | Wiederholen? |
 |---|---|---|---|
@@ -204,3 +217,55 @@ erzeugt die teuersten Fehler in diesem System.
 Immer diese fünf Angaben: Zeitpunkt mit Uhrzeit · `kandidat_id` und, falls vorhanden,
 `doc_id` · was getan werden sollte (ein Satz) · was tatsächlich passierte, mit der
 wörtlichen Meldung · was bereits versucht wurde.
+
+## Dokumentation
+
+- [`docs/http-reference.md`](docs/http-reference.md) - vier HTTP-Adressen mit Parametern und Fehlerfaellen
+- [`docs/error-recovery.md`](docs/error-recovery.md) — neun Fehlersignale
+- [`docs/rollout-checklist.md`](docs/rollout-checklist.md) — Roll-out und Freigabe
+- [`docs/team-anleitung.md`](docs/team-anleitung.md) — Anleitung fuer Mitarbeiter
+
+
+## Automatischer Abgleich
+
+Nach einem freigegebenen Deployment ist `/skill.md` der Live-Stand. Beide Anleitungsdateien werden daraus erzeugt:
+
+Der vorbereitete Repository-Stand 3.0.0 darf vor seinem Deployment nicht durch einen
+Sync-PR aus einem älteren Live-Stand zurückgesetzt werden. Solche PRs nicht übernehmen.
+
+| Erzeugt | Warum |
+|---|---|
+| `skills/jobstep-crm/SKILL.md` | Plugin-Pruefer sucht `skills/*/SKILL.md` |
+| `.agents/skills/jobstep-crm/references/service-guide.md` | Codex-Skill-Referenz, mit Herkunftskopf |
+
+**Nicht erzeugt:** `AGENTS.md`. Aendert der Dienst die Intake-Reihenfolge, ist das eine
+menschliche Entscheidung — die Datei wird nie automatisch nachgezogen.
+
+**Einmalig einrichten:** Repository -> Settings -> Secrets and variables -> Actions ->
+`CODEWORDS_API_KEY` anlegen.
+
+**Lauf:** taeglich 06:00 (Europe/Sarajevo) oder manuell unter Actions.
+Bei Aenderung entsteht ein Pull Request auf `sync/skill-md`; ohne inhaltliche
+Aenderung passiert nichts. Nur ein neues Abrufdatum zaehlt nicht — der Vergleich
+laeuft ueber den Rumpf, nicht ueber die Kopfzeile.
+
+**Lokal pruefen:**
+```bash
+export CODEWORDS_API_KEY=...
+bash scripts/sync-skill.sh
+```
+Rueckgabewert 0 bei Erfolg, 1 bei fehlgeschlagener Plausibilitaetspruefung —
+dann bleiben die vorhandenen Dateien unberuehrt.
+
+## Ersatzaufnahme und lokale Tests (Version 3.0.0, noch nicht ausgerollt)
+
+Beispiel: Pass 100 ist abgelehnt. Ein neuer Pass wird mit `ersetzt_doc_id: 100`
+gespeichert. Pass 100 bleibt unverändert im Verlauf; die neue `doc_id` erscheint
+im **MCP-Soll-Ist-Abgleich** als „Hochgeladen“. Die bestehende CRM-Weboberfläche
+wurde damit nicht verändert; ihre Darstellung ist vor einem späteren Roll-out separat zu prüfen.
+
+Die additive Migration, Transaktionsgrenzen, Testanleitung und Rollback-Grenzen stehen in
+[`docs/document-replacement.md`](docs/document-replacement.md). Die Migration wird
+**nicht** beim Start automatisch ausgeführt. Vor jedem Deployment separat auf Staging
+prüfen, insbesondere Schema/InnoDB und die CALL-Antwort des CodeWords/Pipedream-Connectors.
+Es bleiben 18 Werkzeuge; `ersetzt_doc_id` ist eine optionale Erweiterung des bestehenden Intake-Werkzeugs.

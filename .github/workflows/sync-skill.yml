@@ -1,0 +1,47 @@
+name: Anleitung synchronisieren
+
+on:
+  schedule:
+    # taeglich 05:00 UTC = 06:00 Europe/Sarajevo (Winterzeit)
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: skill-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Anleitung abrufen und beide Dateien erzeugen
+        env:
+          CODEWORDS_API_KEY: ${{ secrets.CODEWORDS_API_KEY }}
+        run: |
+          chmod +x scripts/sync-skill.sh
+          bash scripts/sync-skill.sh
+
+      - name: Pull Request bei Aenderung
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: sync/skill-md
+          delete-branch: true
+          commit-message: "Anleitung aus /skill.md nachziehen"
+          title: "Anleitung aus dem Dienst aktualisiert"
+          labels: documentation, automated
+          body: |
+            Automatisch erzeugt aus `/skill.md` des Dienstes.
+
+            **Bitte pruefen, bevor gemergt wird:**
+            - Aendert sich die Intake-Reihenfolge, ist `AGENTS.md` **nicht** mitgeaendert
+              worden. Das ist Absicht: Regeln sind eine menschliche Entscheidung.
+            - Aendert sich die Statusleiter oder eine Berechtigung, ist eine Freigabe noetig.
+            - Nur ein neues Abrufdatum ohne inhaltliche Aenderung erzeugt keinen PR.
