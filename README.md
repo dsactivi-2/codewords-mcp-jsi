@@ -173,6 +173,9 @@ Immer mit Kommentar: eine unbegründete Rückstufung sieht aus wie ein Fehler.
 
 ### Fehlerbehebung
 
+> Ausführliche Fassung mit Wiederholungsregeln und Übergabekriterien je Signal:
+> [`docs/error-recovery.md`](docs/error-recovery.md)
+
 | Meldung / Signal | Ursache | Was zu tun ist | Wiederholen? |
 |---|---|---|---|
 | `Kandidat ... existiert nicht` | falsche Nummer | erneut identifizieren | nein |
