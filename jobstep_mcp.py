@@ -1445,15 +1445,60 @@ def create_fastapi_app() -> FastAPI:
         "datei_bestaetigen": datei_bestaetigen,
     }
 
+    _specs_by_name: dict[str, dict[str, Any]] = {}
+    for eintrag in TOOL_SPECS:
+        try:
+            _funktion = eintrag["function"]
+            _specs_by_name[_funktion["name"]] = _funktion.get("parameters") or {}
+        except (KeyError, TypeError):
+            continue
+
     @app.post("/test/{werkzeug}", summary="Ein Werkzeug einzeln pruefen (Betrieb und Test)")
     async def werkzeug_pruefen(werkzeug: str, argumente: dict[str, Any] | None = None):
-        """Ruft ein Werkzeug mit denselben Pruefungen auf wie der Agent — nur ohne MCP-Client."""
+        """Ruft ein Werkzeug mit denselben Pruefungen auf wie der Agent — nur ohne MCP-Client.
+
+        Eingabefehler werden mit 400 und klarer Meldung beantwortet, nicht mit 500.
+        Unerwartete Fehler werden protokolliert, aber ohne Stacktrace ausgeliefert.
+        """
         funktion = werkzeuge.get(werkzeug)
         if funktion is None:
             raise HTTPException(status_code=404, detail=f"Unbekanntes Werkzeug: {werkzeug}")
+
+        parameter = argumente or {}
+        if not isinstance(parameter, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="Der Rumpf muss ein JSON-Objekt mit den Werkzeugparametern sein.",
+            )
+
+        spezifikation = _specs_by_name.get(werkzeug, {})
+        pflicht = spezifikation.get("required") or []
+        fehlend = [name for name in pflicht if parameter.get(name) is None]
+        if fehlend:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Pflichtparameter fehlt: {', '.join(fehlend)}",
+            )
+
         ziel = getattr(funktion, "fn", funktion)
         logger.info("Werkzeug-Test", werkzeug=werkzeug)
-        return await ziel(**(argumente or {}))
+        try:
+            return await ziel(**parameter)
+        except HTTPException:
+            raise
+        except ValueError as fehler:
+            raise HTTPException(status_code=400, detail=str(fehler) or "Ungueltiger Wert") from fehler
+        except TypeError as fehler:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Parameter passen nicht zum Werkzeug '{werkzeug}': {fehler}",
+            ) from fehler
+        except Exception as fehler:  # noqa: BLE001 - bewusst breit, aber ohne Traceback nach aussen
+            logger.error("Werkzeug-Test fehlgeschlagen", werkzeug=werkzeug, fehler=str(fehler))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Dienstfehler bei '{werkzeug}': {type(fehler).__name__}",
+            ) from fehler
 
     @app.get("/tools.json", summary="Werkzeug-Definitionen fuer Function Calling")
     async def tools_json():
