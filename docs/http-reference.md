@@ -117,17 +117,25 @@ ohne Python-Stacktrace. Gemessen nach dem Deploy:
 | Situation | Status | Antwort |
 |---|---|---|
 | Pflichtparameter fehlt | `400` | `{"detail":"Pflichtparameter fehlt: doc_id, status_id"}` |
-| ungültiger Statuswert | `400` | `{"detail":"Parameter passen nicht zum Werkzeug 'unterlage_status_setzen': ..."}` |
+| ungültiger Statuswert | `400` | `{"detail":"Unbekannter Status: 99. Erlaubt sind: 3 Hochgeladen, 6 Geprueft, ..."}` |
 | unbekanntes Werkzeug | `404` | `{"detail":"Unbekanntes Werkzeug: gibt_es_nicht"}` |
 | Erfolgsfall | `200` | Ergebnis des Werkzeugs |
 
 Damit gilt: ein `400` heißt „Eingabe falsch, nicht wiederholen" — ein `500` heißt
 „Dienst gestört, melden". Diese Unterscheidung war vorher nicht möglich.
 
-**Verbleibende Einschränkung:** Beim ungültigen Statuswert ist der Statuscode richtig,
-die Meldung aber ungenau — sie nennt einen Parameterkonflikt statt `Unbekannter Status: 99`.
-Ursache ist die Fehlerumwandlung der MCP-Bibliothek, die den ursprünglichen Text ersetzt.
-Der Feldname lässt sich im Rumpf trotzdem finden; die Ursache steht im Dienstprotokoll.
+**Statuswerte werden vorab geprüft.** Ein ungültiger Wert wird abgewiesen, bevor das
+Werkzeug gerufen wird. Die Meldung nennt den übergebenen Wert und alle erlaubten — gemessen:
+
+| Situation | Status | Antwort |
+|---|---|---|
+| Statuswert `99` | `400` | `Unbekannter Status: 99. Erlaubt sind: 3 Hochgeladen, 6 Geprueft, ...` |
+| Statuswert als Text `"99"` | `400` | gleiche Meldung — die Zahl wird erkannt |
+| `doc_status: 99` beim Anlegen | `400` | gleiche Meldung, **bevor** ein Datensatz entsteht |
+| Statuswert `6` (gültig) | `200` | wird ausgeführt — die Prüfung blockiert nur Unbekanntes |
+
+Die Prüfung liegt vor dem Bibliotheksaufruf, weil die MCP-Schicht den ursprünglichen
+Fehlertext sonst durch einen generischen Parameterkonflikt ersetzt.
 
 ---
 
