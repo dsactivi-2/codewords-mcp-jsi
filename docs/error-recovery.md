@@ -7,7 +7,7 @@ passiert, was zu tun ist, ob wiederholt werden darf — und wann ein Mensch übe
 
 1. **Erst prüfen, dann wiederholen.** Nach einem fehlgeschlagenen Schreibvorgang ist
    unklar, ob der Datensatz entstanden ist. Ein blind wiederholter `unterlage_anlegen`
-   erzeugt die teuersten Fehler in diesem System.
+   ist deshalb weiterhin verboten. Version 3.0.0 speichert atomar und erkennt identische Wiederholungen; geänderte Datei oder Vorgänger-ID sind keine Wiederholung.
 2. **Duplikat schlägt fehlend.** Eine Unterlage, die doppelt in der Akte liegt, ist
    schlimmer als eine, die einen Tag später kommt.
 
@@ -112,9 +112,12 @@ abbrach. Genau deshalb ist dieser Fall gefährlich.
 **Vorgehen:**
 1. **Nicht** sofort erneut anlegen.
 2. `kandidat_dokumente` aufrufen und prüfen, ob der Eintrag inzwischen existiert.
-3. Existiert er: Vorgang als erledigt behandeln, `doc_id` von dort übernehmen.
-4. Existiert er nicht: einmal erneut anlegen — dann mit `nrd_id` aus der vorherigen Antwort,
-   falls vorhanden.
+3. Existiert er: `doc_id` und Ersatzverknüpfung übernehmen und den exakten Nachfolger
+   mit `unterlagen_soll` bestätigen; die bloße Existenz ist noch kein Abschluss.
+4. Nach Prüfung höchstens einmal mit exakt denselben Argumenten wiederholen,
+   insbesondere gleicher URL, `nrd_id` und `ersetzt_doc_id`. Die serverseitige
+   Transaktion liefert nach einem bereits erfolgten Commit dieselbe `doc_id` zurück.
+   Niemals Datei, Vorgänger oder Typ ändern, um die Duplikatsperre zu umgehen.
 
 **Wiederholen:** nur nach dieser Prüfung, und nur einmal.
 **Mensch:** ja, wenn der Datensatz weder vorher noch nachher auffindbar ist.
@@ -124,7 +127,7 @@ abbrach. Genau deshalb ist dieser Fall gefährlich.
 ## 6. Lücke nach dem Anlegen nicht geschlossen
 
 **Woran man es erkennt:** Nach erfolgreichem `unterlage_anlegen` zeigt `unterlagen_soll`
-für diesen Typ weiterhin `fehlt: true` oder einen unveränderten Zähler.
+für diesen Typ weiterhin `fehlt: true`, eine andere `doc_id` oder eine falsche Ersatzverknüpfung. Der historische Zähler ist kein Erfolgsbeweis.
 
 **Warum:** Die Unterlage wurde einem anderen Auftrag zugeordnet, oder es existiert keine
 passende Pflichtposition im Auftrag — dann bleibt `doc_nrd_id` leer.
@@ -216,3 +219,13 @@ Ohne Punkt 4 ist jede Meldung wertlos: „hat nicht funktioniert" führt zu kein
 - Einen Status außerhalb der Leiter setzen, um eine Anzeige zu berichtigen.
 - Bei mehrdeutiger Identität raten, statt zu fragen.
 - Einen Ausfall durch Wiederholungen zu überdecken.
+
+
+## Ersatzaufnahme ab Version 3.0.0
+
+`ersetzt_doc_id` muss auf genau ein aktuelles Dokument mit Status 21 oder 24 zeigen,
+im selben Kandidaten, Auftrag, Typ und derselben Pflichtposition. Der alte Status
+und Verlauf werden nicht überschrieben. Der neue Pass startet mit 3 und ist noch
+ungeprüft. Unklare Altbestände, falsche Zuordnung oder mehrere aktuelle Exemplare
+erfordern menschliche Klärung. Bei fehlender Migration/Routine wird vor jedem
+Schreiben abgebrochen; keine automatische Migration oder Reparatur versuchen.

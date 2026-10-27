@@ -199,6 +199,7 @@ fast_app = FastMCP("Jobstep Kandidaten-MCP", json_response=False, stateless_http
 # -------------------------
 MAX_ROWS = 50
 HARD_LIMIT = 200
+SERVICE_VERSION = "3.0.0"
 
 DOC_STATUS: dict[int, str] = {
     3: "Hochgeladen",
@@ -378,10 +379,19 @@ async def unterlagen_soll(
         f"WHERE d.nrd_nalog_id = {nid} AND d.nrd_status = 1 "
         "ORDER BY t.doc_type_name LIMIT 60"
     )
+    # Read the newest unsuperseded document per requirement, not the largest
+    # status number. Rejected predecessors remain available in the history.
     vorhanden = await db(
-        "SELECT doc_nrd_id, COUNT(*) anzahl, MAX(doc_status) status "
-        "FROM idk_pp_documents "
-        f"WHERE doc_candidate_id = {kid} AND doc_nalog_id = {nid} GROUP BY doc_nrd_id LIMIT 200"
+        "SELECT d.doc_nrd_id, d.doc_id, d.doc_status AS status, d.doc_replaces_id, "
+        "(SELECT COUNT(*) FROM idk_pp_documents h WHERE h.doc_candidate_id = d.doc_candidate_id "
+        "AND h.doc_nalog_id = d.doc_nalog_id AND h.doc_nrd_id = d.doc_nrd_id) AS anzahl "
+        "FROM idk_pp_documents d "
+        f"WHERE d.doc_candidate_id = {kid} AND d.doc_nalog_id = {nid} "
+        "AND NOT EXISTS (SELECT 1 FROM idk_pp_documents child WHERE child.doc_replaces_id = d.doc_id) "
+        "AND NOT EXISTS (SELECT 1 FROM idk_pp_documents newer "
+        "WHERE newer.doc_candidate_id = d.doc_candidate_id AND newer.doc_nalog_id = d.doc_nalog_id "
+        "AND newer.doc_nrd_id = d.doc_nrd_id AND newer.doc_id > d.doc_id "
+        "AND NOT EXISTS (SELECT 1 FROM idk_pp_documents c WHERE c.doc_replaces_id = newer.doc_id))"
     )
     ist = {r["doc_nrd_id"]: r for r in vorhanden}
 
@@ -398,7 +408,10 @@ async def unterlagen_soll(
                 "dokumente": treffer.get("anzahl", 0),
                 "status": status,
                 "status_name": DOC_STATUS.get(status, "—") if status else "fehlt",
-                "fehlt": treffer.get("anzahl", 0) == 0,
+                "doc_id": treffer.get("doc_id"),
+                "ersetzt_doc_id": treffer.get("doc_replaces_id"),
+                "pruefung_offen": status == 3,
+                "fehlt": not treffer or status in (21, 24),
             }
         )
     fehlend = [x for x in liste if x["fehlt"]]
@@ -585,15 +598,19 @@ async def kandidat_dokumente(
             f"ORDER BY document_datetime DESC LIMIT {grenze}"
         ),
         db(
-            "SELECT p.doc_id, p.doc_status, p.doc_file_name, p.doc_nalog_id, t.doc_type_name, "
-            "t.doc_type_name_de FROM idk_pp_documents p "
+            "SELECT p.doc_id, p.doc_status, p.doc_file_name, p.doc_nalog_id, "
+            "p.doc_replaces_id AS ersetzt_doc_id, "
+            "(SELECT child.doc_id FROM idk_pp_documents child WHERE child.doc_replaces_id = p.doc_id) "
+            "AS ersetzt_durch_doc_id, COALESCE(p.doc_intake_type_id, r.nrd_type_id) AS doc_type_id, "
+            "t.doc_type_name, t.doc_type_name_de FROM idk_pp_documents p "
             "LEFT JOIN idk_pp_nalog_required_documents r ON r.nrd_id = p.doc_nrd_id "
-            "LEFT JOIN idk_pp_document_types t ON t.doc_type_id = r.nrd_type_id "
+            "LEFT JOIN idk_pp_document_types t ON t.doc_type_id = COALESCE(p.doc_intake_type_id, r.nrd_type_id) "
             f"WHERE p.doc_candidate_id = {kid} ORDER BY p.doc_id DESC LIMIT {grenze}"
         ),
     )
     for eintrag in verfahren:
         eintrag["status_name"] = DOC_STATUS.get(eintrag.get("doc_status"), "—")
+        eintrag["aktuell"] = eintrag.get("ersetzt_durch_doc_id") is None
     return {
         "success": True,
         "kandidat_id": kid,
@@ -661,87 +678,83 @@ async def kandidat_vertraege(
 # -------------------------
 # MCP Tools - Eintragen
 # -------------------------
+def _intake_result(rows: list) -> dict:
+    """Accept flat or nested CALL resultsets; never mistake an OK packet for an ID."""
+    found = []
+    pending = [rows]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, list):
+            pending.extend(item)
+        elif isinstance(item, dict) and item.get("intake_version") == 1:
+            found.append(item)
+    if len(found) != 1 or not found[0].get("doc_id"):
+        raise McpError("Intake-Antwort unklar; vor Wiederholung Dokumente pruefen", code=-32603)
+    return found[0]
+
+
 @fast_app.tool()
 async def unterlage_anlegen(
     kandidat_id: Annotated[int, Field(description="Kandidatennummer im CRM")],
     nalog_id: Annotated[int, Field(description="Auftragsnummer im CRM")],
     doc_type_id: Annotated[int, Field(description="Dokumenttyp aus unterlagen_katalog")],
-    datei_url: Annotated[str, Field(description="Oeffentliche https-Adresse der abgelegten Datei", min_length=10, max_length=500)],
-    doc_status: Annotated[int, Field(description="Startstatus: 3 = Hochgeladen")] = 3,
-    nrd_id: Annotated[int | None, Field(description="Pflichtposition, gegen die abgehakt wird")] = None,
+    datei_url: Annotated[str, Field(description="Oeffentliche https-Adresse der Datei", min_length=10, max_length=500)],
+    doc_status: Annotated[int, Field(description="Startstatus: nur 3 = Hochgeladen")] = 3,
+    nrd_id: Annotated[int | None, Field(description="Pflichtposition im passenden Auftrag")] = None,
     kommentar: Annotated[str, Field(description="Kurzer Hinweis fuer das Team", max_length=500)] = "",
+    ersetzt_doc_id: Annotated[int | None, Field(description="Explizit ersetztes Dokument mit Status 21 oder 24")] = None,
 ) -> dict[str, Any]:
-    """Neue Unterlage eintragen: Dokument, allgemeiner Dateieintrag und Verlaufseintrag.
+    """Neue Unterlage oder expliziten Ersatz atomar und wiederholungssicher speichern.
 
-    Kandidat, Auftrag und Dokumenttyp werden vorher geprueft. Der Dateiverweis muss eine
-    oeffentliche https-Adresse sein. Der Link steht zusaetzlich im Verlauf, damit das Team
-    ihn im CRM sicher sieht.
+    Migration 001 ist Voraussetzung. Ein CALL haelt Kandidatensperre und Transaktion
+    auf derselben DB-Verbindung; alle drei Eintraege entstehen gemeinsam oder gar nicht.
     """
     kid = _num(kandidat_id, "kandidat_id")
     nid = _num(nalog_id, "nalog_id")
     tid = _num(doc_type_id, "doc_type_id")
     status = _num(doc_status, "doc_status")
-    if status not in DOC_STATUS:
-        raise McpError(f"Unbekannter Status {status}; erlaubt: {sorted(DOC_STATUS)}", code=-32602)
-    if not datei_url.strip().startswith("https://"):
+    requirement = _num(nrd_id, "nrd_id") if nrd_id is not None else None
+    previous = _num(ersetzt_doc_id, "ersetzt_doc_id") if ersetzt_doc_id is not None else None
+    if any(value is not None and value <= 0 for value in (kid, nid, tid, requirement, previous)):
+        raise McpError("Kennnummern muessen positiv sein", code=-32602)
+    if status != 3:
+        raise McpError("Neue Unterlagen starten ausschliesslich mit Status 3; menschliche Pruefung bleibt offen", code=-32602)
+    url = datei_url.strip()
+    if not url.startswith("https://"):
         raise McpError("datei_url muss mit https:// beginnen", code=-32602)
+    if not 10 <= len(url) <= 500:
+        raise McpError("datei_url muss 10 bis 500 Zeichen enthalten", code=-32602)
+    if not isinstance(kommentar, str) or len(kommentar) > 500:
+        raise McpError("kommentar darf hoechstens 500 Zeichen enthalten", code=-32602)
+    file_checker = getattr(datei_pruefen, "fn", datei_pruefen)
+    gate = await file_checker(url)
+    if gate.get("erreichbar") is not True:
+        raise McpError("Adresse nicht erreichbar; es wurde nichts gespeichert", code=-32602)
 
-    await _kandidat_oder_fehler(kid)
-    typ = await _dokumenttyp(tid)
-    auftrag = await db(f"SELECT nalog_id FROM idk_nalozi WHERE nalog_id = {nid} LIMIT 1")
-    if not auftrag:
-        raise McpError(f"Auftrag {nid} existiert nicht", code=-32602)
-
-    url = _esc(datei_url.strip())
-    name = _esc(str(typ["doc_type_name"] or "Unterlage"))
-    ext = url.rsplit(".", 1)[-1].lower()[:5] if "." in url else "bin"
-    if nrd_id is not None:
-        nrd_feld = _num(nrd_id, "nrd_id")
-    else:
-        pflicht = await db(
-            "SELECT nrd_id FROM idk_pp_nalog_required_documents "
-            f"WHERE nrd_nalog_id = {nid} AND nrd_type_id = {tid} AND nrd_status = 1 LIMIT 1"
-        )
-        nrd_feld = _num(pflicht[0]["nrd_id"], "nrd_id") if pflicht else "NULL"
-
-    await db(
-        "INSERT INTO idk_pp_documents (doc_file_name, doc_candidate_id, doc_nalog_id, doc_nrd_id, doc_status) "
-        f"VALUES ('{url}', {kid}, {nid}, {nrd_feld}, {status})"
-    )
-    neu = await db(
-        f"SELECT doc_id FROM idk_pp_documents WHERE doc_candidate_id = {kid} ORDER BY doc_id DESC LIMIT 1"
-    )
-    if not neu:
-        raise McpError("Dokument wurde angelegt, Nummer konnte nicht gelesen werden", code=-32603)
-    doc_id = _num(neu[0]["doc_id"], "doc_id")
-
-    await db(
-        "INSERT INTO idk_documents (document_name, document_desc, document_file, document_icon, "
-        "document_datetime, document_group, document_dataid, document_employeeid) "
-        f"VALUES ('{name}', '{_esc(kommentar)}', '{url}', '{_esc(ext)}', NOW(), 2, {kid}, 0)"
-    )
-
-    log_text = f"Agent: Unterlage angelegt ({DOC_STATUS[status]}). Datei: {url}"
-    if kommentar:
-        log_text += f" | {kommentar}"
-    await db(
-        "INSERT INTO idk_pp_documents_status_logs "
-        "(dsl_doc_id, dsl_doc_status, dsl_date, dsl_user_id, dsl_days_count, dsl_comment) "
-        f"VALUES ({doc_id}, {status}, NOW(), 0, 0, '{_esc(log_text)[:900]}')"
-    )
-
-    logger.info("Unterlage angelegt", doc_id=doc_id, kandidat_id=kid, doc_type_id=tid)
+    # UTF-8 hex literals remain data even with NO_BACKSLASH_ESCAPES enabled.
+    url_sql = "CONVERT(X'" + url.encode("utf-8").hex() + "' USING utf8mb4)"
+    comment_sql = "CONVERT(X'" + kommentar.encode("utf-8").hex() + "' USING utf8mb4)"
+    result = _intake_result(await db(
+        "CALL jobstep_document_intake_v1("
+        f"{kid}, {nid}, {tid}, {url_sql}, "
+        f"{requirement if requirement is not None else 'NULL'}, "
+        f"{previous if previous is not None else 'NULL'}, {comment_sql})"
+    ))
+    logger.info("Unterlage aufgenommen", doc_id=result["doc_id"], kandidat_id=kid,
+                doc_type_id=tid, wiederverwendet=bool(result["wiederverwendet"]))
     return {
         "success": True,
-        "doc_id": doc_id,
+        "doc_id": _num(result["doc_id"], "doc_id"),
         "kandidat_id": kid,
         "nalog_id": nid,
-        "unterlagentyp": typ["doc_type_name"],
-        "status": DOC_STATUS[status],
-        "datei_url": datei_url.strip(),
-        "hinweis": "Datei liegt im Speicher; der Link steht im Verlaufseintrag des CRM.",
+        "ersetzt_doc_id": result.get("ersetzt_doc_id"),
+        "wiederverwendet": bool(result["wiederverwendet"]),
+        "status_id": _num(result["doc_status"], "doc_status"),
+        "status": DOC_STATUS.get(_num(result["doc_status"]), "Unbekannt"),
+        "unterlagentyp": result["unterlagentyp"],
+        "datei_url": url,
+        "hinweis": "Eingang gespeichert; Status Hochgeladen ist keine menschliche Freigabe.",
     }
-
 
 @fast_app.tool()
 async def unterlage_status_setzen(
@@ -1020,9 +1033,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "nalog_id": _p("Auftragsnummer", "integer"),
             "doc_type_id": _p("Dokumenttyp aus unterlagen_katalog", "integer"),
             "datei_url": _p("Oeffentliche https-Adresse der Datei"),
-            "doc_status": _p("Startstatus, Standard 3 = Hochgeladen", "integer"),
+            "doc_status": _p("Startstatus: ausschliesslich 3 = Hochgeladen", "integer"),
             "nrd_id": _p("Pflichtposition, gegen die abgehakt wird", "integer"),
             "kommentar": _p("Kurzer Hinweis fuer das Team"),
+            "ersetzt_doc_id": _p("Explizit ersetztes Dokument mit Status 21 oder 24", "integer"),
         },
         ["kandidat_id", "nalog_id", "doc_type_id", "datei_url"],
     ),
@@ -1105,7 +1119,7 @@ TOOL_CONFUSION_MATRIX: list[dict[str, str]] = [
 SKILL_TEXT = r"""---
 name: jobstep-candidate-operations
 description: Operate the Jobstep recruitment CRM through the Jobstep Candidate MCP. Use whenever a candidate message, an incoming document, a new job order, or a document status question must be handled. Covers candidate identification, required-document reconciliation, document intake, status transitions, notes, contracts and error recovery.
-version: 2.0.0
+version: 3.0.0
 applies_to: codex, claude-desktop, custom-llm-agents
 ---
 
@@ -1140,7 +1154,7 @@ If no name comes back, stop and report — the chain is broken, and no retry loo
 6. **Status only from the ladder.** 3, 6, 9, 12, 15, 18, 21, 24, 27. Anything else is rejected.
 7. **Never output PII beyond need.** No passwords, tokens, JMBG, passport or ID numbers.
 8. **Budget discipline.** Every call costs credits. One retry maximum, then escalate.
-9. **Duplicates are the main damage mode.** After any failed write, inspect before retrying.
+9. **Duplicates are the main damage mode.** Intake is transactional and idempotent for the same candidate, order, type and predecessor. After an unknown outcome, inspect and reuse the exact same arguments; never change the file or predecessor to force a retry.
 10. **Silence is not success.** A write is done only when the response contains an id.
 
 ## 3. Data model — what sits where
@@ -1149,7 +1163,7 @@ If no name comes back, stop and report — the chain is broken, and no retry loo
 - **Job order / nalog** (`idk_nalozi`): candidate links via `kandidat_nalog_id`.
 - **Required documents** (`idk_pp_nalog_required_documents`): the checklist per order, varying by profile.
 - **Document types** (`idk_pp_document_types`): Croatian and German names; its id is `doc_type_id`.
-- **Stored document** (`idk_pp_documents`): points at the requirement row via `doc_nrd_id`, at the order, and carries `doc_status`.
+- **Stored document** (`idk_pp_documents`): points at the requirement row via `doc_nrd_id`, at the order, and carries `doc_status`. `doc_replaces_id` explicitly links a replacement to its predecessor; the predecessor and its history are never rewritten by intake. `doc_intake_type_id` keeps the type even without a requirement row. `doc_intake_key` identifies the logical intake operation.
 - **History** (`idk_pp_documents_status_logs`): every status change with time, actor and comment.
 - **Candidate files** (`idk_documents`, group 2) and **notes** (`idk_notes`, group 2).
 
@@ -1180,7 +1194,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### unterlagen_soll
 - **Call when:** deciding what to request; before every `unterlage_anfordern`; after intake to confirm the gap closed.
 - **Do not call:** for a candidate without an order and without a `nalog_id` you can supply.
-- **Returns:** per required document `doc_type_id`, names, count, status, `fehlt`; plus `fehlend_anzahl`.
+- **Returns:** per required document `doc_type_id`, names, historical count, current `doc_id`, `ersetzt_doc_id`, status, `pruefung_offen` and `fehlt`; plus `fehlend_anzahl`. Current status is from the newest unsuperseded document, never the largest status number. A current 21 or 24 remains missing; a new 3 is uploaded but still awaits human review. Historical count alone never proves successful replacement.
 - **Then:** request only `fehlt: true` entries. `pflicht_gesamt` 0 → escalate, do not assume.
 
 ### unterlagen_katalog
@@ -1206,7 +1220,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### kandidat_dokumente
 - **Call when:** duplicate check before intake; after a failed write.
 - **Do not call:** to decide what is missing — that requires `unterlagen_soll`.
-- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type and status names.
+- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type, order, status, `ersetzt_doc_id`, `ersetzt_durch_doc_id` and `aktuell`. This display list is limited; absence from its first page is not proof of absence. Intake checks all matching database records without that limit, scoped to candidate, order and document type.
 
 ### kandidat_notizen
 - **Call when:** continuing a conversation or reviewing agent activity.
@@ -1223,11 +1237,11 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 - **Then:** `erreichbar: false` → do not store; request resend; log; stop.
 
 ### unterlage_anlegen
-- **Call when:** a verified file must become a document for a specific candidate and order.
-- **Do not call:** without a passing `datei_pruefen`; without a catalogue type; on a duplicate at a worked status.
-- **Args:** `kandidat_id`, `nalog_id`, `doc_type_id`, `datei_url`, `doc_status` (default 3), `nrd_id` (optional), `kommentar`.
-- **Behaviour:** validates candidate, order and type; resolves the matching requirement row when `nrd_id` is omitted and ticks the checklist; writes document, file entry and a history line containing the URL.
-- **Then:** confirm with `doc_id`. Never re-create on a timeout — inspect first.
+- **Call when:** a verified file becomes a new document, or explicitly replaces a defective/rejected document for the same candidate, order, type and requirement.
+- **Do not call:** on a matching current document at 3, 6, 9, 12, 15, 18, 27 or an unknown status. Multiple current legacy matches or an unresolvable legacy type require human clarification.
+- **Args:** `kandidat_id`, `nalog_id`, `doc_type_id`, `datei_url`, `doc_status` (only 3), `nrd_id` (optional), `kommentar`, `ersetzt_doc_id` (required for replacement of 21 or 24; omit for initial intake).
+- **Behaviour:** repeats the URL gate server-side, validates the predecessor and requirement, checks all matching current documents without pagination, and uses one database transaction for document, file entry and history. It never changes the old record or grants human review. A candidate lock and unique keys prevent concurrent duplicate intake. An identical replay returns the original `doc_id` with `wiederverwendet: true`; a different file for that same operation is rejected.
+- **Then:** confirm the exact `doc_id` and replacement link through `unterlagen_soll`. Never recreate on a timeout or swap the predecessor to bypass a rejection. Migration 001 must be applied to staging and approved separately before this service version is deployed.
 
 ### unterlage_status_setzen
 - **Call when:** a human confirms review, send or rejection; a document is defective.
@@ -1277,26 +1291,30 @@ Never answer from memory if the data could have changed. Re-read once.
 ## 6. Decision logic — document intake
 
 ```
-1. kandidat_identifizieren            -> candidate resolved
-2. kandidat_dokumente                 -> duplicate check
-   - present at status >= 9  -> do NOT duplicate. Report. Stop.
-   - absent / defective      -> continue
-3. unterlagen_katalog                 -> doc_type_id
-   - no plausible type       -> ask the human. Stop.
-4. datei_pruefen(datei_url)           -> GATE
-   - erreichbar: false       -> request resend + notiz_anlegen. Stop.
-   - erreichbar: true        -> continue
-5. unterlage_anlegen(candidate, order, type, url)
-   - order unknown           -> kandidat_profil.kandidat_nalog_id
-     - still null            -> human handoff, do not invent an order
-   - success                 -> doc_id returned
-6. notiz_anlegen               -> only if the conversation carries information
-                                 not already captured by the history line
-7. verify                      -> unterlagen_soll: gap closed?
-   - not closed              -> do not re-create. Report with doc_id.
+1. kandidat_identifizieren -> resolve the candidate and their order; never guess either
+2. kandidat_dokumente -> inspect the matching type in that order, including replacement links
+   - current 3 / 6 / 9 / 12 / 15 / 18 / 27 / unknown -> stop and clarify; do not duplicate
+   - exactly one current 21 / 24 -> retain its doc_id as the explicit predecessor
+   - no matching document -> initial intake
+   - incomplete or ambiguous legacy data -> stop and clarify
+3. unterlagen_katalog -> resolve doc_type_id; ensure the predecessor belongs to it
+   - no plausible type -> ask the human; stop
+4. datei_pruefen(datei_url) -> GATE
+   - erreichbar: false -> request resend + notiz_anlegen; stop
+5. unterlage_anlegen(candidate, order, type, url, ersetzt_doc_id=predecessor if replacing)
+   - initial status is always 3; preserve the old document and its history
+   - server checks all matching records and commits all three writes together
+   - identical retry -> same doc_id; never create another entry
+6. unterlagen_soll -> matching doc_id, expected ersetzt_doc_id, status and fehlt: false
+   - count alone is insufficient; a new 3 means uploaded, not reviewed
+   - missing/mismatched result -> report with doc_id; do not recreate
 ```
 
-**No gate, no write. Duplicate beats missing.**
+Superseded predecessors do not block their successors. A different current blocking
+document takes precedence over a 21/24 replacement request. Check the candidate,
+order and type together. An optional note is only for information absent from history.
+
+**No gate, no write. Duplicate beats missing. Old history stays; the new document is current.**
 
 ## 7. Decision logic — status workflow
 
@@ -1308,8 +1326,8 @@ Never answer from memory if the data could have changed. Re-read once.
 | 12 | Poslan | Gesendet | only after actual transmission | human, or agent with send confirmation |
 | 15 | Imamo original | Erhalten | original physically arrived | human only |
 | 18 | Spreman | Bereit | final good state | human |
-| 21 | Nije prosao provjeru | Defekt | from 3 or 6 only | agent may flag, human confirms |
-| 24 | Odbijen | Abgelehnt | from 3 or 6, reason required | human only |
+| 21 | Nije prosao provjeru | Defekt | from 3 or 6 only; explicit replacement intake allowed under section 6 | agent may flag, human confirms |
+| 24 | Odbijen | Abgelehnt | from 3 or 6, reason required; explicit replacement intake allowed under section 6 | human only |
 | 27 | Arhiviran | Archiviert | terminal | human only, explicit instruction |
 
 Backwards moves (18 to 6, 12 to 6) are legitimate when a document is superseded — always
@@ -1338,7 +1356,7 @@ candidate per document.
 | `Adresse nicht erreichbar` | dead or private link | request resend, log, stop | no |
 | `Unzulaessige Zeichen im Wert` | punctuation in search | digits or plain text | once |
 | `Datenbank nicht erreichbar` | platform or connection | report with timestamp + tool | no |
-| Timeout / no response | unknown | **inspect** via `kandidat_dokumente` before any retry | once, after inspection |
+| Timeout / no response | unknown | **inspect** via `kandidat_dokumente`; preserve candidate, order, type, file and predecessor for any replay | once, after inspection |
 | Empty result where data expected | not maintained or wrong filter | reinterpret | once |
 
 Escalation packet: timestamp, `kandidat_id` (and `doc_id`), intended action in one
@@ -1403,7 +1421,7 @@ def create_fastapi_app() -> FastAPI:
     app = FastAPI(
         title="Jobstep Kandidaten-MCP",
         description="Feste Werkzeuge fuer den Kandidaten-Agenten: nachschauen, eintragen, Dateien ablegen.",
-        version="1.0.0",
+        version=SERVICE_VERSION,
         debug=starlette_app.debug,
         routes=starlette_app.routes,
         middleware=starlette_app.user_middleware,
@@ -1422,7 +1440,7 @@ def create_fastapi_app() -> FastAPI:
 
     @app.get("/health", summary="Status des Dienstes")
     async def health():
-        return {"status": "ok", "dienst": "jobstep-mcp", "werkzeuge": len(TOOL_SPECS)}
+        return {"status": "ok", "dienst": "jobstep-mcp", "version": SERVICE_VERSION, "werkzeuge": len(TOOL_SPECS)}
 
     werkzeuge = {
         "kandidat_identifizieren": kandidat_identifizieren,
@@ -1524,7 +1542,7 @@ def create_fastapi_app() -> FastAPI:
 
     @app.get("/tools.json", summary="Werkzeug-Definitionen fuer Function Calling")
     async def tools_json():
-        return {"tools": TOOL_SPECS}
+        return {"version": SERVICE_VERSION, "service_id": "jobstep_mcp_4a31136a", "tools": TOOL_SPECS}
 
     @app.post("/datei", summary="Datei ablegen und oeffentliche Adresse zurueckgeben")
     async def datei_ablegen():
@@ -1541,3 +1559,4 @@ def create_fastapi_app() -> FastAPI:
 # -------------------------
 if __name__ == "__main__":
     run_service(create_fastapi_app())
+

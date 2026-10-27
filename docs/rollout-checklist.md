@@ -1,8 +1,9 @@
 # Roll-out-Checkliste — Jobstep Kandidaten-MCP
 
-Gültig für den nächsten Versionssprung (Ziel: v3). Heute steht der Dienst auf
-Skill-Version `2.0.0`; ein eigenes Versionsfeld im Dienst und in `tools.json` gibt
-es noch nicht — Punkt 1 schließt diese Lücke.
+Gültig für den vorbereiteten Versionssprung auf 3.0.0. Letzter dokumentierter
+Ausgangsstand: Skill-Version 2.0.0. Dieser PR enthält die Versionsfelder und
+Ersatzaufnahme bereits im Repository; er wurde weder gemergt noch deployed.
+Lokale Tests verwenden ausschließlich künstliche Daten in einer isolierten MySQL-Datenbank.
 
 **Regel für den Sprung:** Die Hauptversion steigt, wenn sich der Werkzeugsatz, die
 Parameter oder die Statuspolitik ändern. Ein neuer Werkzeugtyp, ein neues Feld oder
@@ -38,15 +39,31 @@ auslöst, hält an — er arbeitet nicht daran vorbei.
 
 ---
 
+## 0a. Ersatzaufnahme-Migration (vor Deployment separat freigeben)
+
+- [ ] `docs/document-replacement.md` und Migration 001 lesen; produktives Schema,
+      Indexnamen, Tabellen-Engines und Berechtigungen mit dem Staging-Schema vergleichen.
+- [ ] Alle vier gesperrten/geschriebenen Tabellen müssen InnoDB sein. Kein automatischer Engine-Wechsel.
+- [ ] Migration zuerst auf Staging anwenden. DDL ist nicht vollständig rückrollbar;
+      Backup und Wartungsfenster gehören zur separaten Roll-out-Freigabe.
+- [ ] MySQL-Connector muss `CALL jobstep_document_intake_v1(...)` ausführen dürfen
+      und dessen Resultset korrekt als `ret` zurückgeben. Lokal wurde MySQL direkt getestet,
+      nicht die Produktionsverbindung.
+- [ ] Ersatzfall 24 → neue 3, Timeout-Replay, Parallelaufrufe und Fehler-Rollback auf Staging prüfen.
+- [ ] Schutz-Trigger mit der CRM-Oberfläche prüfen: ersetzte Vorgänger nicht überschreiben;
+      Status/Datei am aktuellen Nachfolger bearbeiten. Keine vorhandenen Fremd-Trigger ersetzen.
+- [ ] Bestehende CRM-Weboberfläche getrennt prüfen: dieser PR ändert die MCP-Anzeige,
+      nicht die externen CRM-Templates oder deren Abfragen.
+
 ## 1. Versionsbump
 
 - [ ] **`skill.md` im Dienst:** `version: 2.0.0` → `version: 3.0.0` im Frontmatter.
-- [ ] **`tools.json`:** Feld `version` ergänzen — heute nicht vorhanden:
+- [ ] **`tools.json`:** vorbereitetes Feld `version` im ausgelieferten Dienst prüfen:
       ```json
       { "version": "3.0.0", "service_id": "jobstep_mcp_4a31136a", "generated_at": "…", "tools": [ … ] }
       ```
-- [ ] **Dienst:** Konstante `SERVICE_VERSION = "3.0.0"` einführen und in `/health`
-      ausgeben, damit die laufende Fassung abfragbar ist.
+- [ ] **Dienst:** vorbereitete Konstante `SERVICE_VERSION = "3.0.0"` und die Ausgabe in `/health`
+      gegen die laufende Fassung prüfen.
 - [ ] **Prüfen:** `curl -s "$BASE/health"` zeigt `"version": "3.0.0"`.
       Abbruch, wenn `/health` und `skill.md` unterschiedliche Versionen melden.
 
@@ -54,7 +71,9 @@ auslöst, hält an — er arbeitet nicht daran vorbei.
 
 ## 2. Service-Guide aktualisieren
 
-Der Dienst ist die Quelle. Die Datei im Repository ist eine Kopie — **nie umgekehrt**.
+Die versionierte Quelle ist `SKILL_TEXT` in `jobstep_mcp.py`; die Referenz wird daraus
+generiert. Vor dem Deployment ist sie ein ausdrücklich gekennzeichneter Sollstand.
+Nach dem Deployment muss die ausgelieferte `/skill.md` damit übereinstimmen.
 
 - [ ] Deploy abwarten und Erreichbarkeit prüfen:
       `GET /skill.md` → 200, Inhaltstyp `text/markdown`.
@@ -157,3 +176,4 @@ Vorbereitet, bevor deployed wird — nicht danach erfunden.
 - [ ] Keine doppelten Unterlagen: Stichprobe über zehn Kandidaten mit neuen Einträgen.
 - [ ] `docs/team-anleitung.md` prüfen, ob sich für das Team etwas geändert hat.
 - [ ] Abweichungen mit Zeitpunkt und `kandidat_id` notieren — Grundlage für v4.
+

@@ -1,14 +1,15 @@
 <!--
-Quelle: https://runtime.codewords.ai/run/jobstep_mcp_4a31136a/skill.md
+Quelle: jobstep_mcp.py, Konstante SKILL_TEXT (Version 3.0.0)
 Dienst: Jobstep Kandidaten-MCP (jobstep_mcp_4a31136a)
-Abgerufen: 2026-10-27
+Dienst-URL: https://runtime.codewords.ai/run/jobstep_mcp_4a31136a/skill.md
+Abgeglichen: 2026-10-27 aus der versionierten Quelle; nicht live ausgerollt.
 Hinweis: automatisch erzeugte Kopie — nicht von Hand bearbeiten.
 -->
 
 ---
 name: jobstep-candidate-operations
 description: Operate the Jobstep recruitment CRM through the Jobstep Candidate MCP. Use whenever a candidate message, an incoming document, a new job order, or a document status question must be handled. Covers candidate identification, required-document reconciliation, document intake, status transitions, notes, contracts and error recovery.
-version: 2.0.0
+version: 3.0.0
 applies_to: codex, claude-desktop, custom-llm-agents
 ---
 
@@ -43,7 +44,7 @@ If no name comes back, stop and report — the chain is broken, and no retry loo
 6. **Status only from the ladder.** 3, 6, 9, 12, 15, 18, 21, 24, 27. Anything else is rejected.
 7. **Never output PII beyond need.** No passwords, tokens, JMBG, passport or ID numbers.
 8. **Budget discipline.** Every call costs credits. One retry maximum, then escalate.
-9. **Duplicates are the main damage mode.** After any failed write, inspect before retrying.
+9. **Duplicates are the main damage mode.** Intake is transactional and idempotent for the same candidate, order, type and predecessor. After an unknown outcome, inspect and reuse the exact same arguments; never change the file or predecessor to force a retry.
 10. **Silence is not success.** A write is done only when the response contains an id.
 
 ## 3. Data model — what sits where
@@ -52,7 +53,7 @@ If no name comes back, stop and report — the chain is broken, and no retry loo
 - **Job order / nalog** (`idk_nalozi`): candidate links via `kandidat_nalog_id`.
 - **Required documents** (`idk_pp_nalog_required_documents`): the checklist per order, varying by profile.
 - **Document types** (`idk_pp_document_types`): Croatian and German names; its id is `doc_type_id`.
-- **Stored document** (`idk_pp_documents`): points at the requirement row via `doc_nrd_id`, at the order, and carries `doc_status`.
+- **Stored document** (`idk_pp_documents`): points at the requirement row via `doc_nrd_id`, at the order, and carries `doc_status`. `doc_replaces_id` explicitly links a replacement to its predecessor; the predecessor and its history are never rewritten by intake. `doc_intake_type_id` keeps the type even without a requirement row. `doc_intake_key` identifies the logical intake operation.
 - **History** (`idk_pp_documents_status_logs`): every status change with time, actor and comment.
 - **Candidate files** (`idk_documents`, group 2) and **notes** (`idk_notes`, group 2).
 
@@ -83,7 +84,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### unterlagen_soll
 - **Call when:** deciding what to request; before every `unterlage_anfordern`; after intake to confirm the gap closed.
 - **Do not call:** for a candidate without an order and without a `nalog_id` you can supply.
-- **Returns:** per required document `doc_type_id`, names, count, status, `fehlt`; plus `fehlend_anzahl`.
+- **Returns:** per required document `doc_type_id`, names, historical count, current `doc_id`, `ersetzt_doc_id`, status, `pruefung_offen` and `fehlt`; plus `fehlend_anzahl`. Current status is from the newest unsuperseded document, never the largest status number. A current 21 or 24 remains missing; a new 3 is uploaded but still awaits human review. Historical count alone never proves successful replacement.
 - **Then:** request only `fehlt: true` entries. `pflicht_gesamt` 0 → escalate, do not assume.
 
 ### unterlagen_katalog
@@ -109,7 +110,7 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 ### kandidat_dokumente
 - **Call when:** duplicate check before intake; after a failed write.
 - **Do not call:** to decide what is missing — that requires `unterlagen_soll`.
-- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type and status names.
+- **Returns:** `dateien_in_der_akte` and `unterlagen_verfahren` with type, order, status, `ersetzt_doc_id`, `ersetzt_durch_doc_id` and `aktuell`. This display list is limited; absence from its first page is not proof of absence. Intake checks all matching database records without that limit, scoped to candidate, order and document type.
 
 ### kandidat_notizen
 - **Call when:** continuing a conversation or reviewing agent activity.
@@ -126,11 +127,11 @@ requirement position, status. `unterlage_anlegen` performs that binding;
 - **Then:** `erreichbar: false` → do not store; request resend; log; stop.
 
 ### unterlage_anlegen
-- **Call when:** a verified file must become a document for a specific candidate and order.
-- **Do not call:** without a passing `datei_pruefen`; without a catalogue type; on a duplicate at a worked status.
-- **Args:** `kandidat_id`, `nalog_id`, `doc_type_id`, `datei_url`, `doc_status` (default 3), `nrd_id` (optional), `kommentar`.
-- **Behaviour:** validates candidate, order and type; resolves the matching requirement row when `nrd_id` is omitted and ticks the checklist; writes document, file entry and a history line containing the URL.
-- **Then:** confirm with `doc_id`. Never re-create on a timeout — inspect first.
+- **Call when:** a verified file becomes a new document, or explicitly replaces a defective/rejected document for the same candidate, order, type and requirement.
+- **Do not call:** on a matching current document at 3, 6, 9, 12, 15, 18, 27 or an unknown status. Multiple current legacy matches or an unresolvable legacy type require human clarification.
+- **Args:** `kandidat_id`, `nalog_id`, `doc_type_id`, `datei_url`, `doc_status` (only 3), `nrd_id` (optional), `kommentar`, `ersetzt_doc_id` (required for replacement of 21 or 24; omit for initial intake).
+- **Behaviour:** repeats the URL gate server-side, validates the predecessor and requirement, checks all matching current documents without pagination, and uses one database transaction for document, file entry and history. It never changes the old record or grants human review. A candidate lock and unique keys prevent concurrent duplicate intake. An identical replay returns the original `doc_id` with `wiederverwendet: true`; a different file for that same operation is rejected.
+- **Then:** confirm the exact `doc_id` and replacement link through `unterlagen_soll`. Never recreate on a timeout or swap the predecessor to bypass a rejection. Migration 001 must be applied to staging and approved separately before this service version is deployed.
 
 ### unterlage_status_setzen
 - **Call when:** a human confirms review, send or rejection; a document is defective.
@@ -180,26 +181,30 @@ Never answer from memory if the data could have changed. Re-read once.
 ## 6. Decision logic — document intake
 
 ```
-1. kandidat_identifizieren            -> candidate resolved
-2. kandidat_dokumente                 -> duplicate check
-   - present at status >= 9  -> do NOT duplicate. Report. Stop.
-   - absent / defective      -> continue
-3. unterlagen_katalog                 -> doc_type_id
-   - no plausible type       -> ask the human. Stop.
-4. datei_pruefen(datei_url)           -> GATE
-   - erreichbar: false       -> request resend + notiz_anlegen. Stop.
-   - erreichbar: true        -> continue
-5. unterlage_anlegen(candidate, order, type, url)
-   - order unknown           -> kandidat_profil.kandidat_nalog_id
-     - still null            -> human handoff, do not invent an order
-   - success                 -> doc_id returned
-6. notiz_anlegen               -> only if the conversation carries information
-                                 not already captured by the history line
-7. verify                      -> unterlagen_soll: gap closed?
-   - not closed              -> do not re-create. Report with doc_id.
+1. kandidat_identifizieren -> resolve the candidate and their order; never guess either
+2. kandidat_dokumente -> inspect the matching type in that order, including replacement links
+   - current 3 / 6 / 9 / 12 / 15 / 18 / 27 / unknown -> stop and clarify; do not duplicate
+   - exactly one current 21 / 24 -> retain its doc_id as the explicit predecessor
+   - no matching document -> initial intake
+   - incomplete or ambiguous legacy data -> stop and clarify
+3. unterlagen_katalog -> resolve doc_type_id; ensure the predecessor belongs to it
+   - no plausible type -> ask the human; stop
+4. datei_pruefen(datei_url) -> GATE
+   - erreichbar: false -> request resend + notiz_anlegen; stop
+5. unterlage_anlegen(candidate, order, type, url, ersetzt_doc_id=predecessor if replacing)
+   - initial status is always 3; preserve the old document and its history
+   - server checks all matching records and commits all three writes together
+   - identical retry -> same doc_id; never create another entry
+6. unterlagen_soll -> matching doc_id, expected ersetzt_doc_id, status and fehlt: false
+   - count alone is insufficient; a new 3 means uploaded, not reviewed
+   - missing/mismatched result -> report with doc_id; do not recreate
 ```
 
-**No gate, no write. Duplicate beats missing.**
+Superseded predecessors do not block their successors. A different current blocking
+document takes precedence over a 21/24 replacement request. Check the candidate,
+order and type together. An optional note is only for information absent from history.
+
+**No gate, no write. Duplicate beats missing. Old history stays; the new document is current.**
 
 ## 7. Decision logic — status workflow
 
@@ -211,8 +216,8 @@ Never answer from memory if the data could have changed. Re-read once.
 | 12 | Poslan | Gesendet | only after actual transmission | human, or agent with send confirmation |
 | 15 | Imamo original | Erhalten | original physically arrived | human only |
 | 18 | Spreman | Bereit | final good state | human |
-| 21 | Nije prosao provjeru | Defekt | from 3 or 6 only | agent may flag, human confirms |
-| 24 | Odbijen | Abgelehnt | from 3 or 6, reason required | human only |
+| 21 | Nije prosao provjeru | Defekt | from 3 or 6 only; explicit replacement intake allowed under section 6 | agent may flag, human confirms |
+| 24 | Odbijen | Abgelehnt | from 3 or 6, reason required; explicit replacement intake allowed under section 6 | human only |
 | 27 | Arhiviran | Archiviert | terminal | human only, explicit instruction |
 
 Backwards moves (18 to 6, 12 to 6) are legitimate when a document is superseded — always
@@ -241,7 +246,7 @@ candidate per document.
 | `Adresse nicht erreichbar` | dead or private link | request resend, log, stop | no |
 | `Unzulaessige Zeichen im Wert` | punctuation in search | digits or plain text | once |
 | `Datenbank nicht erreichbar` | platform or connection | report with timestamp + tool | no |
-| Timeout / no response | unknown | **inspect** via `kandidat_dokumente` before any retry | once, after inspection |
+| Timeout / no response | unknown | **inspect** via `kandidat_dokumente`; preserve candidate, order, type, file and predecessor for any replay | once, after inspection |
 | Empty result where data expected | not maintained or wrong filter | reinterpret | once |
 
 Escalation packet: timestamp, `kandidat_id` (and `doc_id`), intended action in one
