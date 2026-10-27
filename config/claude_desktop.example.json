@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "jobstep": {
+      "url": "https://runtime.codewords.ai/run/jobstep_mcp_4a31136a/mcp/",
+      "headers": {
+        "Authorization": "Bearer ckw-DEIN-CODEWORDS-KEY"
+      }
+    }
+  }
+}
